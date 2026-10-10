@@ -38,6 +38,15 @@ The scanner fetches the current branch’s upstream remote and reports its ahead
 
 Other local branches, stashes, ignored files, and databases are not included. A second machine’s report is not shared to this one yet; open the dashboard and scan on each machine separately.
 
+## Repository stats
+
+Stats are separate from the sync scan. After pairing, the dashboard can load local Git statistics for tracked repositories (commit counts, recent activity, contributors, size, languages, branches, remotes, stashes, and recent churn).
+
+- **Load portfolio stats** computes stats for every tracked path and fills the portfolio sums and table columns.
+- Opening a repository opens the stats panel; missing stats are computed on demand. **Refresh stats** forces a recompute for that path (or all paths from the toolbar).
+- Results are cached in ignored `.repo-local/stats.json` on that machine. A cache entry is reused for 24 hours while `HEAD` is unchanged; a new commit or an explicit refresh invalidates it.
+- Portfolio totals sum only repositories that already have cached stats. List and detail views share the same cache entry per absolute path. Stats never fetch remotes and are not merged across machines.
+
 ## Local preview and tests
 
 In another terminal:
@@ -57,8 +66,8 @@ The companion accepts only the hosted dashboard and the documented local-preview
 ## Source and deployment
 
 - `dist/index.html`: dashboard layout and styling.
-- `dist/app.js`: pairing, selection, scanning, and status rendering.
-- `companion/server.py`: local discovery and Git scanner.
+- `dist/app.js`: pairing, selection, scanning, stats, and status rendering.
+- `companion/server.py`: local discovery, Git scanner, and stats collector.
 - `.openai/hosting.json`: existing Sites project identity; preserve it when publishing updates.
 
 GitHub stores the project source. Hosting remains through Sites with private access and the custom domain `repo.theana.online`. Deployments use the Sites-managed source repository; pushing GitHub does not automatically deploy. Local settings and pairing tokens must never be included in deployment artifacts.

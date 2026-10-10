@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import subprocess
 import tempfile
@@ -115,6 +116,58 @@ class CompanionTests(unittest.TestCase):
         ]:
             self.assertFalse(api.authorized(host, origin, token, "secret", 48731))
 
+    def test_collect_stats_reads_local_history_without_fetch(self):
+        api = self.api()
+        repo = self.repo("stats-repo")
+        (repo / "app.py").write_text("print(1)\n")
+        self.git(repo, "add", ".")
+        self.git(repo, "commit", "-m", "second")
+        self.git(repo, "remote", "add", "origin", "https://github.com/example/stats-repo.git")
+        calls = []
+        original = api.git
+
+        def tracking_git(path, *args, timeout=35):
+            calls.append(args[0] if args else "")
+            return original(path, *args, timeout=timeout)
+
+        api.git = tracking_git
+        try:
+            result = api.collect_stats(str(repo))
+        finally:
+            api.git = original
+        self.assertEqual(result["commitCount"], 2)
+        self.assertEqual(result["contributorCount"], 1)
+        self.assertEqual(result["topContributors"][0]["name"], "Test")
+        self.assertEqual(result["branchCount"], 1)
+        self.assertEqual(result["remotes"][0]["name"], "origin")
+        self.assertGreater(result["workingTreeBytes"], 0)
+        self.assertTrue(any(item["extension"] == ".py" for item in result["languages"]))
+        self.assertEqual(len(result["weeklyCommits"]), 12)
+        self.assertIsNone(result["error"])
+        self.assertNotIn("fetch", calls)
+
+    def test_stats_cache_hit_head_invalidation_and_refresh(self):
+        api = self.api()
+        repo = self.repo("cached")
+        state = api.State([self.root], self.root / "settings.json")
+        state.select([str(repo)])
+        first = state.stats_for_path(str(repo))
+        self.assertEqual(first["commitCount"], 1)
+        second = state.stats_for_path(str(repo))
+        self.assertEqual(second["computedAt"], first["computedAt"])
+        (repo / "file.txt").write_text("changed")
+        self.git(repo, "commit", "-am", "change")
+        third = state.stats_for_path(str(repo))
+        self.assertEqual(third["commitCount"], 2)
+        self.assertNotEqual(third["head"], first["head"])
+        before = third["computedAt"]
+        forced = state.stats_for_path(str(repo), refresh=True)
+        self.assertEqual(forced["commitCount"], 2)
+        self.assertGreaterEqual(forced["computedAt"], before)
+        cached = state.cached_stats()
+        self.assertEqual(len(cached), 1)
+        self.assertEqual(cached[0]["path"], str(repo.resolve()))
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -167,6 +220,33 @@ class HttpBoundaryTests(unittest.TestCase):
                     response.getheader("Access-Control-Allow-Private-Network"), "true"
                 )
                 response.read()
+                connection.close()
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+                connection.request(
+                    "GET",
+                    "/api/stats",
+                    headers={
+                        "Origin": "https://evil.example",
+                        "Authorization": "Bearer test-token",
+                    },
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 403)
+                response.read()
+                connection.close()
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+                connection.request(
+                    "GET",
+                    "/api/stats",
+                    headers={
+                        "Origin": "https://repo.theana.online",
+                        "Authorization": "Bearer test-token",
+                    },
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                payload = json.loads(response.read().decode())
+                self.assertEqual(payload["repositories"], [])
                 connection.close()
             finally:
                 server.shutdown()

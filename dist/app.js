@@ -15,11 +15,14 @@ let repos = [],
   token = '',
   lastFocus,
   activity = [],
-  busy = false;
+  busy = false,
+  statsBusy = false,
+  statsByPath = {};
 const base = 'http://127.0.0.1:48731';
 async function api(path, body) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), path === 'scan' ? 900000 : 20000);
+  const long = path === 'scan' || (path === 'stats' && body);
+  const timer = setTimeout(() => controller.abort(), long ? 900000 : 20000);
   try {
     const response = await fetch(base + '/api/' + path, {
       method: body ? 'POST' : 'GET',
@@ -35,6 +38,84 @@ async function api(path, body) {
     return result;
   } finally {
     clearTimeout(timer);
+  }
+}
+function mergeStats(list) {
+  (list || []).forEach((s) => {
+    if (s?.path) statsByPath[s.path] = s;
+  });
+}
+function formatBytes(n) {
+  if (n == null || Number.isNaN(n)) return '—';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = n,
+    i = 0;
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i += 1;
+  }
+  return (i ? value.toFixed(1) : String(value)) + ' ' + units[i];
+}
+function relativeTime(iso) {
+  if (!iso) return '—';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(ms)) return '—';
+  const mins = Math.round(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return hours + 'h ago';
+  const days = Math.round(hours / 24);
+  if (days < 60) return days + 'd ago';
+  return new Date(iso).toLocaleDateString();
+}
+function sparkline(weeks) {
+  const values = Array.isArray(weeks) ? weeks : [];
+  const max = Math.max(1, ...values);
+  return /* HTML */ `
+    <div class="sparkline" aria-hidden="true">
+      ${values
+        .map((v) => `<span style="height:${Math.max(2, Math.round((v / max) * 36))}px"></span>`)
+        .join('')}
+    </div>
+  `;
+}
+function portfolioNumbers() {
+  const cached = paths.map((p) => statsByPath[p]).filter(Boolean);
+  const names = new Set();
+  cached.forEach((s) => (s.topContributors || []).forEach((c) => names.add(c.name)));
+  return {
+    cached: cached.length,
+    tracked: paths.length,
+    commits: cached.reduce((sum, s) => sum + (s.commitCount || 0), 0),
+    commits30: cached.reduce((sum, s) => sum + (s.commits30d || 0), 0),
+    contributors: names.size,
+  };
+}
+async function hydrateStats() {
+  if (!paired) return;
+  try {
+    const result = await api('stats');
+    mergeStats(result.repositories);
+    render();
+  } catch (_) {
+    /* cache hydrate is best-effort */
+  }
+}
+async function computeStats(body, label) {
+  if (!paired || statsBusy) return;
+  statsBusy = true;
+  render();
+  try {
+    const result = await api('stats', body);
+    mergeStats(result.repositories);
+    activity.unshift(label + ' at ' + new Date().toLocaleString());
+    toast(label + ' complete for ' + (result.repositories || []).length + ' repositories.');
+  } catch (e) {
+    toast('Stats failed: ' + e.message);
+  } finally {
+    statsBusy = false;
+    render();
   }
 }
 function toast(message) {
@@ -85,14 +166,22 @@ function render() {
             (filter === 'dirty' && r.modified + r.untracked > 0)),
       );
   $('rows').innerHTML = list
-    .map(
-      (r) => /* HTML */ `
+    .map((r) => {
+      const s = statsByPath[r.path];
+      return /* HTML */ `
         <tr>
           <td>
             <span class="repo-name">${esc(r.name)}</span>
             <span class="repo-path">${esc(r.path)}</span>
           </td>
           <td><span class="branch">⑂ ${esc(r.branch || 'Unknown')}</span></td>
+          <td>
+            <span class="count ${s?.commitCount ? '' : 'zero'}">${s?.commitCount ?? '—'}</span>
+          </td>
+          <td>${esc(relativeTime(s?.lastCommitAt))}</td>
+          <td>
+            <span class="count ${s?.commits30d ? '' : 'zero'}">${s?.commits30d ?? '—'}</span>
+          </td>
           <td>
             <span class="count ${r.behind ? 'behind' : 'zero'}">${r.behind ?? '?'}</span>
           </td>
@@ -110,11 +199,11 @@ function render() {
             </span>
           </td>
           <td>
-            <button class="row-btn" data-path="${esc(r.path)}">Details ↗</button>
+            <button class="row-btn" data-path="${esc(r.path)}">Stats ↗</button>
           </td>
         </tr>
-      `,
-    )
+      `;
+    })
     .join('');
   $('empty').hidden = !!list.length;
   $('empty').textContent = other
@@ -137,6 +226,29 @@ function render() {
               repos.filter((r) => r.modified + r.untracked > 0).length,
             ][i]),
   );
+  const pulse = portfolioNumbers();
+  const showPortfolio = paired && !other && paths.length;
+  $('portfolioStats').hidden = !showPortfolio;
+  $('portfolioActions').hidden = !showPortfolio;
+  if (showPortfolio) {
+    const hasCache = pulse.cached > 0;
+    $('commitStat').textContent = hasCache ? String(pulse.commits) : '—';
+    $('commit30Stat').textContent = hasCache ? String(pulse.commits30) : '—';
+    $('contributorStat').textContent = hasCache ? String(pulse.contributors) : '—';
+    $('statsCoverageStat').textContent = `${pulse.cached}/${pulse.tracked}`;
+    $('statsCoverageLabel').textContent = hasCache
+      ? 'Cached / tracked'
+      : 'No stats loaded yet';
+    $('statsMeta').textContent = statsBusy
+      ? 'Computing stats…'
+      : hasCache
+        ? `Portfolio sums ${pulse.cached} cached repositories.`
+        : 'Load stats to fill the portfolio row and table columns.';
+    $('loadStats').disabled = statsBusy || busy || !paths.length;
+    $('refreshStats').disabled = statsBusy || busy || !paths.length || !hasCache;
+    $('loadStats').textContent = statsBusy ? 'Loading…' : 'Load portfolio stats';
+    $('refreshStats').textContent = statsBusy ? 'Refreshing…' : 'Refresh all stats';
+  }
   $('machineTitle').innerHTML = other
     ? 'Second machine <span>NOT SCANNED</span>'
     : esc(machineName) + ` <span>${paired ? 'CONNECTED' : 'NOT CONNECTED'}</span>`;
@@ -150,9 +262,9 @@ function render() {
       ? 'Compared with each branch’s upstream · ' + new Date(scannedAt).toLocaleString()
       : 'No live scan yet';
   $('currentInsights').hidden = other || !scannedAt;
-  $('scan').disabled = other || !paired || busy || !paths.length;
-  $('sync').disabled = other || !scannedAt || busy;
-  $('manage').disabled = other || !paired || busy;
+  $('scan').disabled = other || !paired || busy || statsBusy || !paths.length;
+  $('sync').disabled = other || !scannedAt || busy || statsBusy;
+  $('manage').disabled = other || !paired || busy || statsBusy;
   $('connect').textContent = paired ? 'Connection settings' : 'Connect companion';
   $('scan').innerHTML = busy ? 'Scanning…' : '<span class="arrow">⟳</span> Scan this machine';
   $('currentMachineNav').textContent = machineName;
@@ -164,46 +276,157 @@ function render() {
     .querySelectorAll('[data-path]')
     .forEach((b) => (b.onclick = () => details(repos.find((r) => r.path === b.dataset.path))));
 }
-function details(r) {
-  open(
-    /* HTML */ `
-      <h3 id="dialogTitle">${esc(r.name)}</h3>
-      <p>${esc(r.branch)} → ${esc(r.upstream || 'No upstream')}</p>
-      <div class="detail-grid">
-        ${[
-          ['Behind', r.behind ?? 'Unknown'],
-          ['Ahead', r.ahead ?? 'Unknown'],
-          ['Modified files', r.modified],
-          ['Untracked files', r.untracked],
-        ]
-          .map(
-            ([label, value]) => /* HTML */ `
-              <div class="detail-cell">
-                <span class="small">${label}</span>
-                <strong>${value}</strong>
-              </div>
-            `,
-          )
-          .join('')}
-      </div>
-      <h2>${esc(next(r))}</h2>
-      ${r.error
+function cells(pairs) {
+  return pairs
+    .map(
+      ([label, value]) => /* HTML */ `
+        <div class="detail-cell">
+          <span class="small">${label}</span>
+          <strong>${value}</strong>
+        </div>
+      `,
+    )
+    .join('');
+}
+function renderStatsPanel(r, s) {
+  const contributors = (s?.topContributors || [])
+    .map(
+      (c) =>
+        `<li><span>${esc(c.name)}</span><span>${esc(c.commits)}</span></li>`,
+    )
+    .join('');
+  const languages = (s?.languages || [])
+    .map(
+      (l) =>
+        `<li><span>${esc(l.extension)}</span><span>${esc(l.files)} · ${esc(formatBytes(l.bytes))}</span></li>`,
+    )
+    .join('');
+  const dirs = (s?.largestDirs || [])
+    .map(
+      (d) =>
+        `<li><span>${esc(d.name)}</span><span>${esc(formatBytes(d.bytes))}</span></li>`,
+    )
+    .join('');
+  const remotes = (s?.remotes || [])
+    .map((m) => `${esc(m.name)} · ${esc(m.url)}`)
+    .join('<br>') || 'None';
+  return /* HTML */ `
+    <h3 id="dialogTitle">${esc(r.name)}</h3>
+    <p>${esc(r.branch)} → ${esc(r.upstream || 'No upstream')} · ${esc(next(r))}</p>
+    <div class="detail-grid">
+      ${cells([
+        ['Behind', r.behind ?? 'Unknown'],
+        ['Ahead', r.ahead ?? 'Unknown'],
+        ['Modified', r.modified],
+        ['Untracked', r.untracked],
+      ])}
+    </div>
+    ${r.error ? `<div class="callout">${esc(r.error)}</div>` : ''}
+    ${
+      s
         ? /* HTML */ `
-            <div class="callout">${esc(r.error)}</div>
+            <div class="stats-section">
+              <h2>History & activity</h2>
+              <div class="detail-grid">
+                ${cells([
+                  ['Commits', s.commitCount ?? '—'],
+                  ['30d', s.commits30d ?? '—'],
+                  ['90d', s.commits90d ?? '—'],
+                  ['Age', relativeTime(s.firstCommitAt)],
+                ])}
+              </div>
+              <p class="note" style="margin-top:12px">
+                Last: ${esc(s.lastCommitAuthor || '—')} · ${esc(relativeTime(s.lastCommitAt))}<br />
+                ${esc(s.lastCommitSubject || '')}
+              </p>
+              ${sparkline(s.weeklyCommits)}
+              <p class="small">Commits per week · last 12 weeks</p>
+            </div>
+            <div class="stats-section">
+              <h2>Contributors</h2>
+              <p class="small">${esc(s.contributorCount ?? '—')} total · top 5</p>
+              <ul class="contrib-list">
+                ${contributors || '<li><span>None</span></li>'}
+              </ul>
+            </div>
+            <div class="stats-section">
+              <h2>Shape</h2>
+              <div class="detail-grid">
+                ${cells([
+                  ['Tracked size', formatBytes(s.workingTreeBytes)],
+                  ['Branches', s.branchCount ?? '—'],
+                  ['Stashes', s.stashCount ?? '—'],
+                  ['Files changed · 30d', s.filesChanged30d ?? '—'],
+                ])}
+              </div>
+              <p class="small" style="margin-top:12px">Languages</p>
+              <ul class="lang-list">${languages || '<li><span>None</span></li>'}</ul>
+              <p class="small" style="margin-top:12px">Largest paths</p>
+              <ul class="lang-list">${dirs || '<li><span>None</span></li>'}</ul>
+            </div>
+            <div class="stats-section">
+              <h2>Remotes</h2>
+              <div class="mono">${remotes}</div>
+            </div>
+            ${s.error ? `<div class="callout">${esc(s.error)}</div>` : ''}
+            <p class="note">
+              Stats computed ${esc(s.computedAt ? new Date(s.computedAt).toLocaleString() : '—')}
+              · HEAD ${esc(s.head || '—')} · cache ${esc(s.ttlHours ?? 24)}h
+            </p>
+            <button class="btn" id="refreshOneStats">Refresh stats</button>
           `
-        : ''}
-      <div class="mono">${esc(r.path)}</div>
-      ${r.github
+        : /* HTML */ `
+            <div class="callout">Stats are not loaded for this repository yet.</div>
+            <button class="btn lime" id="refreshOneStats">Load stats</button>
+          `
+    }
+    <div class="mono" style="margin-top:16px">${esc(r.path)}</div>
+    ${
+      r.github
         ? /* HTML */ `
             <a href="${esc(r.github)}" target="_blank" rel="noopener">Open on GitHub ↗</a>
           `
-        : ''}
-      <p class="note">
-        Current branch only. Other branches, stashes, ignored files, and databases are not included.
-      </p>
-    `,
-    'Repository details',
-  );
+        : ''
+    }
+    <p class="note">
+      Sync status is from the latest scan. Stats are local Git reads only and do not fetch remotes.
+    </p>
+  `;
+}
+async function details(r) {
+  if (!r) return;
+  open(renderStatsPanel(r, statsByPath[r.path]), 'Repository stats');
+  const bindRefresh = () => {
+    const button = $('refreshOneStats');
+    if (!button) return;
+    button.onclick = async () => {
+      button.disabled = true;
+      button.textContent = 'Computing…';
+      try {
+        const result = await api('stats', { path: r.path, refresh: !!statsByPath[r.path] });
+        mergeStats(result.repositories);
+        open(renderStatsPanel(r, statsByPath[r.path]), 'Repository stats');
+        bindRefresh();
+        render();
+      } catch (e) {
+        toast('Stats failed: ' + e.message);
+        button.disabled = false;
+        button.textContent = statsByPath[r.path] ? 'Refresh stats' : 'Load stats';
+      }
+    };
+  };
+  bindRefresh();
+  if (!statsByPath[r.path]) {
+    try {
+      const result = await api('stats', { path: r.path });
+      mergeStats(result.repositories);
+      open(renderStatsPanel(r, statsByPath[r.path]), 'Repository stats');
+      bindRefresh();
+      render();
+    } catch (e) {
+      toast('Stats failed: ' + e.message);
+    }
+  }
 }
 function sync() {
   const ready = repos.filter(eligible),
@@ -263,8 +486,10 @@ function connect() {
       paths = result.paths;
       repos = [];
       scannedAt = null;
+      statsByPath = {};
       render();
       close();
+      await hydrateStats();
       manage();
     } catch (e) {
       token = previous;
@@ -367,6 +592,9 @@ function manage() {
       paths = result.paths;
       repos = [];
       scannedAt = null;
+      statsByPath = Object.fromEntries(
+        Object.entries(statsByPath).filter(([path]) => paths.includes(path)),
+      );
       render();
       close();
       toast('Tracking selection saved on this machine. Click Scan to refresh.');
@@ -376,6 +604,10 @@ function manage() {
     }
   };
 }
+$('loadStats').onclick = () =>
+  computeStats({ all: true }, 'Loaded portfolio stats');
+$('refreshStats').onclick = () =>
+  computeStats({ all: true, refresh: true }, 'Refreshed portfolio stats');
 $('scan').onclick = async () => {
   busy = true;
   render();

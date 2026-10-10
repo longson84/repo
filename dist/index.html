@@ -287,6 +287,52 @@
       .stat-number.green {
         color: var(--green);
       }
+      .stats.portfolio {
+        margin-top: -14px;
+        margin-bottom: 28px;
+      }
+      .portfolio-actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin: -8px 0 22px;
+        flex-wrap: wrap;
+      }
+      .sparkline {
+        display: flex;
+        align-items: flex-end;
+        gap: 3px;
+        height: 36px;
+        margin: 10px 0 4px;
+      }
+      .sparkline span {
+        flex: 1;
+        min-width: 4px;
+        background: #c5d3b5;
+        border-radius: 2px 2px 0 0;
+      }
+      .stats-section {
+        margin-top: 22px;
+      }
+      .stats-section h2 {
+        font-size: 13px;
+        margin-bottom: 10px;
+      }
+      .contrib-list,
+      .lang-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .contrib-list li,
+      .lang-list li {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 12px;
+        padding: 6px 0;
+        border-bottom: 1px solid #eef1e8;
+      }
       .section-head {
         display: flex;
         align-items: center;
@@ -864,6 +910,45 @@
             <div class="stat-bottom">Need attention before syncing</div>
           </div>
         </div>
+        <div class="stats portfolio" id="portfolioStats" hidden>
+          <div class="stat">
+            <div class="stat-top">
+              Total commits
+              <span>∑</span>
+            </div>
+            <div class="stat-number" id="commitStat">—</div>
+            <div class="stat-bottom">Sum of cached repos</div>
+          </div>
+          <div class="stat">
+            <div class="stat-top">
+              Commits · 30d
+              <span>◷</span>
+            </div>
+            <div class="stat-number" id="commit30Stat">—</div>
+            <div class="stat-bottom">Recent activity</div>
+          </div>
+          <div class="stat">
+            <div class="stat-top">
+              Contributors
+              <span>◎</span>
+            </div>
+            <div class="stat-number" id="contributorStat">—</div>
+            <div class="stat-bottom">Unique names in cache</div>
+          </div>
+          <div class="stat">
+            <div class="stat-top">
+              Stats coverage
+              <span>□</span>
+            </div>
+            <div class="stat-number" id="statsCoverageStat">—</div>
+            <div class="stat-bottom" id="statsCoverageLabel">Cached / tracked</div>
+          </div>
+        </div>
+        <div class="portfolio-actions" id="portfolioActions" hidden>
+          <button class="btn" id="loadStats">Load portfolio stats</button>
+          <button class="btn" id="refreshStats">Refresh all stats</button>
+          <span class="small" id="statsMeta"></span>
+        </div>
         <div class="section-head">
           <h2>
             Repositories
@@ -893,6 +978,9 @@
                 <tr>
                   <th>Repository</th>
                   <th>Branch</th>
+                  <th>Commits</th>
+                  <th>Last activity</th>
+                  <th>30d</th>
                   <th>↓ Behind</th>
                   <th>↑ Ahead</th>
                   <th>Local changes</th>
