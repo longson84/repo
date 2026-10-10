@@ -143,8 +143,43 @@ class CompanionTests(unittest.TestCase):
         self.assertGreater(result["workingTreeBytes"], 0)
         self.assertTrue(any(item["extension"] == ".py" for item in result["languages"]))
         self.assertEqual(len(result["weeklyCommits"]), 12)
+        self.assertEqual(len(result["commitsByDay"]), 30)
+        self.assertEqual(len(result["commitsByWeek"]), 26)
+        self.assertEqual(len(result["commitsByMonth"]), 24)
+        self.assertGreaterEqual(len(result["commitsByYear"]), 1)
+        self.assertEqual(sum(item["commits"] for item in result["commitsByDay"]), 2)
+        self.assertEqual(sum(item["commits"] for item in result["commitsByYear"]), 2)
         self.assertIsNone(result["error"])
         self.assertNotIn("fetch", calls)
+
+    def test_commit_series_buckets_day_week_month_year(self):
+        api = self.api()
+        series = api.commit_series(
+            [
+                "2026-10-01T10:00:00+00:00",
+                "2026-10-01T12:00:00+00:00",
+                "2026-09-15T09:00:00+00:00",
+                "2025-01-02T09:00:00+00:00",
+            ],
+            now=api.datetime(2026, 10, 10, tzinfo=api.timezone.utc),
+        )
+        self.assertEqual(len(series["commitsByDay"]), 30)
+        self.assertEqual(
+            next(item["commits"] for item in series["commitsByDay"] if item["period"] == "2026-10-01"),
+            2,
+        )
+        self.assertEqual(
+            next(item["commits"] for item in series["commitsByMonth"] if item["period"] == "2026-09"),
+            1,
+        )
+        self.assertEqual(
+            next(item["commits"] for item in series["commitsByYear"] if item["period"] == "2025"),
+            1,
+        )
+        self.assertEqual(
+            next(item["commits"] for item in series["commitsByYear"] if item["period"] == "2026"),
+            3,
+        )
 
     def test_stats_cache_hit_head_invalidation_and_refresh(self):
         api = self.api()

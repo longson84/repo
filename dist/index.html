@@ -318,6 +318,97 @@
         font-size: 13px;
         margin-bottom: 10px;
       }
+      .detail-page {
+        padding-bottom: 40px;
+      }
+      .detail-back {
+        border: 0;
+        background: transparent;
+        color: #536743;
+        font-size: 13px;
+        text-decoration: underline;
+        text-underline-offset: 4px;
+        padding: 0;
+        margin: 8px 0 18px;
+      }
+      .detail-title {
+        font-size: 32px;
+        letter-spacing: -1px;
+        margin: 0 0 8px;
+      }
+      .period-tabs {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin: 18px 0 14px;
+      }
+      .period-tabs button {
+        border: 1px solid var(--line);
+        background: white;
+        border-radius: 6px;
+        padding: 8px 12px;
+        font-size: 12px;
+        color: #5d704c;
+      }
+      .period-tabs button.selected {
+        background: #edf3e6;
+        border-color: #c5d3b5;
+        font-weight: 650;
+      }
+      .bar-chart {
+        display: flex;
+        align-items: flex-end;
+        gap: 4px;
+        height: 160px;
+        padding: 12px 4px 0;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: white;
+        overflow-x: auto;
+      }
+      .bar-chart .bar {
+        flex: 1 0 14px;
+        min-width: 10px;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        align-items: center;
+        height: 100%;
+      }
+      .bar-chart .bar i {
+        display: block;
+        width: 100%;
+        max-width: 28px;
+        background: #9bb48a;
+        border-radius: 3px 3px 0 0;
+        min-height: 2px;
+      }
+      .bar-chart .bar span {
+        font-size: 9px;
+        color: #8b9383;
+        margin-top: 6px;
+        writing-mode: vertical-rl;
+        transform: rotate(180deg);
+        max-height: 48px;
+        overflow: hidden;
+      }
+      .period-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 16px;
+        font-size: 13px;
+      }
+      .period-table th,
+      .period-table td {
+        text-align: left;
+        padding: 10px 8px;
+        border-bottom: 1px solid #eef1e8;
+      }
+      .period-table th {
+        color: #7a8371;
+        font-size: 11px;
+        font-weight: 600;
+      }
       .contrib-list,
       .lang-list {
         list-style: none;
@@ -839,13 +930,14 @@
       </aside>
       <main class="main">
         <header class="topbar">
-          <div class="crumb">
+          <div class="crumb" id="crumb">
             Theana
             <span style="padding: 0 10px">/</span>
             <b>Repository workspace</b>
           </div>
           <span class="demo">Live local scanning</span>
         </header>
+        <div id="overviewView">
         <div class="heading">
           <div>
             <h1>Your code, across machines.</h1>
@@ -1039,6 +1131,8 @@
           <span>Live data from your paired local companion.</span>
           <span>Scanning fetches references. Pull and push are not enabled.</span>
         </footer>
+        </div>
+        <div id="detailView" class="detail-page" hidden></div>
       </main>
     </div>
     <div class="overlay" id="overlay">

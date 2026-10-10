@@ -5,8 +5,9 @@ No checkout, pull, commit, or push endpoints. Stats are read-only and never fetc
 """
 
 import argparse
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
@@ -44,6 +45,64 @@ def git_soft(path, *args, timeout=35):
         return git(path, *args, timeout=timeout)
     except (ValueError, subprocess.TimeoutExpired, OSError):
         return None
+
+
+def _series(counter, keys):
+    return [{"period": key, "commits": counter.get(key, 0)} for key in keys]
+
+
+def commit_series(iso_dates, now=None):
+    """Bucket commit timestamps into day/week/month/year series."""
+    now = now or datetime.now(timezone.utc)
+    today = now.date()
+    by_day = Counter()
+    by_week = Counter()
+    by_month = Counter()
+    by_year = Counter()
+    for value in iso_dates:
+        if not value:
+            continue
+        try:
+            stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        day = stamp.astimezone(timezone.utc).date()
+        by_day[day.isoformat()] += 1
+        year, week, _ = day.isocalendar()
+        by_week[f"{year}-W{week:02d}"] += 1
+        by_month[day.strftime("%Y-%m")] += 1
+        by_year[str(day.year)] += 1
+
+    day_keys = [(today - timedelta(days=offset)).isoformat() for offset in range(29, -1, -1)]
+    monday = today - timedelta(days=today.weekday())
+    week_keys = []
+    for offset in range(25, -1, -1):
+        week_start = monday - timedelta(weeks=offset)
+        year, week, _ = week_start.isocalendar()
+        week_keys.append(f"{year}-W{week:02d}")
+    month_keys = []
+    year_num, month_num = today.year, today.month
+    for _ in range(24):
+        month_keys.append(f"{year_num:04d}-{month_num:02d}")
+        month_num -= 1
+        if month_num == 0:
+            month_num = 12
+            year_num -= 1
+    month_keys.reverse()
+    if by_year:
+        first_year = min(int(year) for year in by_year)
+        last_year = max(int(year) for year in by_year)
+        year_keys = [str(year) for year in range(first_year, last_year + 1)]
+    else:
+        year_keys = [str(today.year)]
+    return {
+        "commitsByDay": _series(by_day, day_keys),
+        "commitsByWeek": _series(by_week, week_keys),
+        "commitsByMonth": _series(by_month, month_keys),
+        "commitsByYear": _series(by_year, year_keys),
+    }
 
 
 def authorized(host, origin, authorization, token, port):
@@ -153,6 +212,10 @@ def collect_stats(path):
         languages=None,
         largestDirs=None,
         filesChanged30d=None,
+        commitsByDay=None,
+        commitsByWeek=None,
+        commitsByMonth=None,
+        commitsByYear=None,
         error=None,
     )
     errors = []
@@ -206,23 +269,16 @@ def collect_stats(path):
     else:
         note("commits 90d")
 
-    stamps = git_soft(
-        path, "log", "--since=84.days", "--format=%ct", "HEAD", timeout=60
-    )
-    if stamps is not None:
-        week = 7 * 24 * 3600
-        end = int(now.timestamp())
-        buckets = [0] * 12
-        for line in stamps.splitlines():
-            if not line.isdigit():
-                continue
-            age = end - int(line)
-            if age < 0:
-                continue
-            index = min(11, age // week)
-            buckets[11 - index] += 1
-        result["weeklyCommits"] = buckets
+    log_dates = git_soft(path, "log", "--format=%cI", "HEAD", timeout=120)
+    if log_dates is not None:
+        series = commit_series(log_dates.splitlines(), now=now)
+        result.update(series)
+        week_map = {item["period"]: item["commits"] for item in series["commitsByWeek"]}
+        result["weeklyCommits"] = [
+            week_map.get(item["period"], 0) for item in series["commitsByWeek"][-12:]
+        ]
     else:
+        note("commit timeline")
         note("weekly commits")
 
     shortlog = git_soft(path, "shortlog", "-sn", "HEAD", timeout=60)
@@ -321,6 +377,9 @@ def collect_stats(path):
 def stats_fresh(cached, path):
     if not cached:
         return False
+    for key in ("commitsByDay", "commitsByWeek", "commitsByMonth", "commitsByYear"):
+        if not isinstance(cached.get(key), list):
+            return False
     head = git_soft(path, "rev-parse", "--short", "HEAD")
     if not head or cached.get("head") != head:
         return False

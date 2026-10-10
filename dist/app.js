@@ -17,8 +17,16 @@ let repos = [],
   activity = [],
   busy = false,
   statsBusy = false,
-  statsByPath = {};
+  statsByPath = {},
+  detailPath = null,
+  detailPeriod = 'day';
 const base = 'http://127.0.0.1:48731';
+const PERIOD_KEYS = {
+  day: 'commitsByDay',
+  week: 'commitsByWeek',
+  month: 'commitsByMonth',
+  year: 'commitsByYear',
+};
 async function api(path, body) {
   const controller = new AbortController();
   const long = path === 'scan' || (path === 'stats' && body);
@@ -171,7 +179,13 @@ function render() {
       return /* HTML */ `
         <tr>
           <td>
-            <span class="repo-name">${esc(r.name)}</span>
+            <button
+              class="repo-name"
+              data-path="${esc(r.path)}"
+              style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer;color:inherit;font:inherit"
+            >
+              ${esc(r.name)}
+            </button>
             <span class="repo-path">${esc(r.path)}</span>
           </td>
           <td><span class="branch">⑂ ${esc(r.branch || 'Unknown')}</span></td>
@@ -199,7 +213,7 @@ function render() {
             </span>
           </td>
           <td>
-            <button class="row-btn" data-path="${esc(r.path)}">Stats ↗</button>
+            <button class="row-btn" data-path="${esc(r.path)}">Open →</button>
           </td>
         </tr>
       `;
@@ -272,9 +286,21 @@ function render() {
   $('nextTitle').textContent = `${repos.filter(eligible).length} repositories can receive updates`;
   $('nextText').textContent =
     'Review the eligible branches and the reasons other repositories need attention. This version previews updates; it does not pull or push.';
+  const onDetail = detailPath && !other;
+  $('overviewView').hidden = !!onDetail;
+  $('detailView').hidden = !onDetail;
+  if (onDetail) {
+    paintDetail();
+    $('crumb').innerHTML = `Theana <span style="padding:0 10px">/</span> <a href="#/" style="color:inherit">Repositories</a> <span style="padding:0 10px">/</span> <b>${esc(
+      (repos.find((r) => r.path === detailPath) || statsByPath[detailPath] || { name: detailPath.split(/[\\/]/).pop() }).name,
+    )}</b>`;
+  } else {
+    $('crumb').innerHTML =
+      'Theana <span style="padding: 0 10px">/</span> <b>Repository workspace</b>';
+  }
   document
     .querySelectorAll('[data-path]')
-    .forEach((b) => (b.onclick = () => details(repos.find((r) => r.path === b.dataset.path))));
+    .forEach((b) => (b.onclick = () => openRepo(b.dataset.path)));
 }
 function cells(pairs) {
   return pairs
@@ -288,31 +314,108 @@ function cells(pairs) {
     )
     .join('');
 }
-function renderStatsPanel(r, s) {
-  const contributors = (s?.topContributors || [])
-    .map(
-      (c) =>
-        `<li><span>${esc(c.name)}</span><span>${esc(c.commits)}</span></li>`,
-    )
-    .join('');
-  const languages = (s?.languages || [])
-    .map(
-      (l) =>
-        `<li><span>${esc(l.extension)}</span><span>${esc(l.files)} · ${esc(formatBytes(l.bytes))}</span></li>`,
-    )
-    .join('');
-  const dirs = (s?.largestDirs || [])
-    .map(
-      (d) =>
-        `<li><span>${esc(d.name)}</span><span>${esc(formatBytes(d.bytes))}</span></li>`,
-    )
-    .join('');
-  const remotes = (s?.remotes || [])
-    .map((m) => `${esc(m.name)} · ${esc(m.url)}`)
-    .join('<br>') || 'None';
+function parseHash() {
+  const raw = location.hash.replace(/^#/, '');
+  if (raw.startsWith('/repo?')) {
+    return decodeURIComponent(raw.slice('/repo?'.length));
+  }
+  return null;
+}
+function openRepo(path) {
+  if (!path) return;
+  detailPeriod = 'day';
+  location.hash = '#/repo?' + encodeURIComponent(path);
+}
+function closeRepo() {
+  location.hash = '#/';
+}
+function barChart(series) {
+  const values = Array.isArray(series) ? series : [];
+  const max = Math.max(1, ...values.map((item) => item.commits || 0));
+  if (!values.length) {
+    return '<p class="note">No commit timeline in cache yet.</p>';
+  }
   return /* HTML */ `
-    <h3 id="dialogTitle">${esc(r.name)}</h3>
+    <div class="bar-chart" role="img" aria-label="Commit counts">
+      ${values
+        .map((item) => {
+          const height = Math.max(2, Math.round(((item.commits || 0) / max) * 110));
+          const label =
+            detailPeriod === 'day'
+              ? String(item.period).slice(5)
+              : detailPeriod === 'year'
+                ? String(item.period)
+                : String(item.period).replace(/^\d{4}-/, '');
+          return /* HTML */ `
+            <div class="bar" title="${esc(item.period)}: ${esc(item.commits)}">
+              <i style="height:${height}px"></i>
+              <span>${esc(label)}</span>
+            </div>
+          `;
+        })
+        .join('')}
+    </div>
+  `;
+}
+function periodTable(series) {
+  const values = Array.isArray(series) ? series : [];
+  const rows = [...values].reverse().filter((item) => (item.commits || 0) > 0);
+  if (!rows.length) {
+    return '<p class="note">No commits in this range.</p>';
+  }
+  return /* HTML */ `
+    <table class="period-table">
+      <thead>
+        <tr>
+          <th>Period</th>
+          <th>Commits</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows
+          .map(
+            (item) => /* HTML */ `
+              <tr>
+                <td>${esc(item.period)}</td>
+                <td>${esc(item.commits)}</td>
+              </tr>
+            `,
+          )
+          .join('')}
+      </tbody>
+    </table>
+  `;
+}
+function paintDetail() {
+  const path = detailPath;
+  const r =
+    repos.find((repo) => repo.path === path) ||
+    ({
+      path,
+      name: path.split(/[\\/]/).pop(),
+      branch: '—',
+      upstream: null,
+      ahead: null,
+      behind: null,
+      modified: 0,
+      untracked: 0,
+      fresh: false,
+      error: scannedAt ? null : 'Scan this machine to see sync status.',
+      github: null,
+    });
+  const s = statsByPath[path];
+  const seriesKey = PERIOD_KEYS[detailPeriod] || 'commitsByDay';
+  const series = s?.[seriesKey] || [];
+  const contributors = (s?.topContributors || [])
+    .map((c) => `<li><span>${esc(c.name)}</span><span>${esc(c.commits)}</span></li>`)
+    .join('');
+  const remotes =
+    (s?.remotes || []).map((m) => `${esc(m.name)} · ${esc(m.url)}`).join('<br>') || 'None';
+  $('detailView').innerHTML = /* HTML */ `
+    <button class="detail-back" id="backRepos">← Back to repositories</button>
+    <h1 class="detail-title">${esc(r.name)}</h1>
     <p>${esc(r.branch)} → ${esc(r.upstream || 'No upstream')} · ${esc(next(r))}</p>
+    <div class="mono" style="margin:8px 0 18px">${esc(r.path)}</div>
     <div class="detail-grid">
       ${cells([
         ['Behind', r.behind ?? 'Unknown'],
@@ -325,108 +428,128 @@ function renderStatsPanel(r, s) {
     ${
       s
         ? /* HTML */ `
-            <div class="stats-section">
-              <h2>History & activity</h2>
-              <div class="detail-grid">
-                ${cells([
-                  ['Commits', s.commitCount ?? '—'],
-                  ['30d', s.commits30d ?? '—'],
-                  ['90d', s.commits90d ?? '—'],
-                  ['Age', relativeTime(s.firstCommitAt)],
-                ])}
+            <div class="detail-grid">
+              ${cells([
+                ['Commits', s.commitCount ?? '—'],
+                ['30d', s.commits30d ?? '—'],
+                ['90d', s.commits90d ?? '—'],
+                ['Contributors', s.contributorCount ?? '—'],
+                ['Tracked size', formatBytes(s.workingTreeBytes)],
+                ['Branches', s.branchCount ?? '—'],
+                ['Stashes', s.stashCount ?? '—'],
+                ['Last activity', relativeTime(s.lastCommitAt)],
+              ])}
+            </div>
+            <p class="note">
+              Last: ${esc(s.lastCommitAuthor || '—')} · ${esc(s.lastCommitSubject || '')}
+            </p>
+            <section class="stats-section">
+              <h2>Commits over time</h2>
+              <div class="period-tabs">
+                ${['day', 'week', 'month', 'year']
+                  .map(
+                    (period) => /* HTML */ `
+                      <button data-period="${period}" class="${detailPeriod === period ? 'selected' : ''}">
+                        ${period[0].toUpperCase() + period.slice(1)}
+                      </button>
+                    `,
+                  )
+                  .join('')}
               </div>
-              <p class="note" style="margin-top:12px">
-                Last: ${esc(s.lastCommitAuthor || '—')} · ${esc(relativeTime(s.lastCommitAt))}<br />
-                ${esc(s.lastCommitSubject || '')}
+              <p class="small">
+                ${
+                  detailPeriod === 'day'
+                    ? 'Last 30 days'
+                    : detailPeriod === 'week'
+                      ? 'Last 26 weeks'
+                      : detailPeriod === 'month'
+                        ? 'Last 24 months'
+                        : 'All years with commits'
+                }
               </p>
-              ${sparkline(s.weeklyCommits)}
-              <p class="small">Commits per week · last 12 weeks</p>
-            </div>
-            <div class="stats-section">
-              <h2>Contributors</h2>
-              <p class="small">${esc(s.contributorCount ?? '—')} total · top 5</p>
-              <ul class="contrib-list">
-                ${contributors || '<li><span>None</span></li>'}
-              </ul>
-            </div>
-            <div class="stats-section">
-              <h2>Shape</h2>
-              <div class="detail-grid">
-                ${cells([
-                  ['Tracked size', formatBytes(s.workingTreeBytes)],
-                  ['Branches', s.branchCount ?? '—'],
-                  ['Stashes', s.stashCount ?? '—'],
-                  ['Files changed · 30d', s.filesChanged30d ?? '—'],
-                ])}
-              </div>
-              <p class="small" style="margin-top:12px">Languages</p>
-              <ul class="lang-list">${languages || '<li><span>None</span></li>'}</ul>
-              <p class="small" style="margin-top:12px">Largest paths</p>
-              <ul class="lang-list">${dirs || '<li><span>None</span></li>'}</ul>
-            </div>
-            <div class="stats-section">
+              ${barChart(series)}
+              ${periodTable(series)}
+            </section>
+            <section class="stats-section">
+              <h2>Contributors · top 5</h2>
+              <ul class="contrib-list">${contributors || '<li><span>None</span></li>'}</ul>
+            </section>
+            <section class="stats-section">
               <h2>Remotes</h2>
               <div class="mono">${remotes}</div>
-            </div>
+            </section>
             ${s.error ? `<div class="callout">${esc(s.error)}</div>` : ''}
             <p class="note">
               Stats computed ${esc(s.computedAt ? new Date(s.computedAt).toLocaleString() : '—')}
-              · HEAD ${esc(s.head || '—')} · cache ${esc(s.ttlHours ?? 24)}h
+              · HEAD ${esc(s.head || '—')}
             </p>
             <button class="btn" id="refreshOneStats">Refresh stats</button>
           `
         : /* HTML */ `
-            <div class="callout">Stats are not loaded for this repository yet.</div>
+            <div class="callout">Loading repository stats…</div>
             <button class="btn lime" id="refreshOneStats">Load stats</button>
           `
     }
-    <div class="mono" style="margin-top:16px">${esc(r.path)}</div>
     ${
       r.github
         ? /* HTML */ `
-            <a href="${esc(r.github)}" target="_blank" rel="noopener">Open on GitHub ↗</a>
+            <p style="margin-top:16px">
+              <a href="${esc(r.github)}" target="_blank" rel="noopener">Open on GitHub ↗</a>
+            </p>
           `
         : ''
     }
-    <p class="note">
-      Sync status is from the latest scan. Stats are local Git reads only and do not fetch remotes.
-    </p>
   `;
-}
-async function details(r) {
-  if (!r) return;
-  open(renderStatsPanel(r, statsByPath[r.path]), 'Repository stats');
-  const bindRefresh = () => {
-    const button = $('refreshOneStats');
-    if (!button) return;
-    button.onclick = async () => {
-      button.disabled = true;
-      button.textContent = 'Computing…';
+  $('backRepos').onclick = closeRepo;
+  document.querySelectorAll('[data-period]').forEach((button) => {
+    button.onclick = () => {
+      detailPeriod = button.dataset.period;
+      paintDetail();
+    };
+  });
+  const refresh = $('refreshOneStats');
+  if (refresh) {
+    refresh.onclick = async () => {
+      refresh.disabled = true;
+      refresh.textContent = 'Computing…';
       try {
-        const result = await api('stats', { path: r.path, refresh: !!statsByPath[r.path] });
+        const result = await api('stats', {
+          path,
+          refresh: !!statsByPath[path],
+        });
         mergeStats(result.repositories);
-        open(renderStatsPanel(r, statsByPath[r.path]), 'Repository stats');
-        bindRefresh();
         render();
       } catch (e) {
         toast('Stats failed: ' + e.message);
-        button.disabled = false;
-        button.textContent = statsByPath[r.path] ? 'Refresh stats' : 'Load stats';
+        refresh.disabled = false;
+        refresh.textContent = statsByPath[path] ? 'Refresh stats' : 'Load stats';
       }
     };
-  };
-  bindRefresh();
-  if (!statsByPath[r.path]) {
-    try {
-      const result = await api('stats', { path: r.path });
-      mergeStats(result.repositories);
-      open(renderStatsPanel(r, statsByPath[r.path]), 'Repository stats');
-      bindRefresh();
-      render();
-    } catch (e) {
-      toast('Stats failed: ' + e.message);
+  }
+}
+async function ensureDetailStats() {
+  if (!detailPath || !paired) return;
+  const cached = statsByPath[detailPath];
+  if (cached && Array.isArray(cached.commitsByDay)) return;
+  try {
+    const result = await api('stats', { path: detailPath });
+    mergeStats(result.repositories);
+    render();
+  } catch (e) {
+    toast('Stats failed: ' + e.message);
+    if ($('detailView') && !$('detailView').hidden) {
+      $('detailView').innerHTML = /* HTML */ `
+        <button class="detail-back" id="backRepos">← Back to repositories</button>
+        <div class="callout">${esc(e.message)}</div>
+      `;
+      $('backRepos').onclick = closeRepo;
     }
   }
+}
+async function syncRoute() {
+  detailPath = parseHash();
+  render();
+  if (detailPath) await ensureDetailStats();
 }
 function sync() {
   const ready = repos.filter(eligible),
@@ -669,8 +792,12 @@ document.querySelectorAll('[data-filter]').forEach(
 );
 $('overviewNav').onclick = () => {
   $('machine').value = 'current';
-  render();
+  if (detailPath) closeRepo();
+  else render();
 };
+window.addEventListener('hashchange', () => {
+  syncRoute();
+});
 $('machinesNav').onclick = () =>
   open(
     /* HTML */ `
@@ -692,4 +819,4 @@ $('activityNav').onclick = () =>
     `,
     'Activity',
   );
-render();
+syncRoute();

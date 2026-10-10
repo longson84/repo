@@ -43,8 +43,9 @@ Other local branches, stashes, ignored files, and databases are not included. A 
 Stats are separate from the sync scan. After pairing, the dashboard can load local Git statistics for tracked repositories (commit counts, recent activity, contributors, size, languages, branches, remotes, stashes, and recent churn).
 
 - **Load portfolio stats** computes stats for every tracked path and fills the portfolio sums and table columns.
-- Opening a repository opens the stats panel; missing stats are computed on demand. **Refresh stats** forces a recompute for that path (or all paths from the toolbar).
-- Results are cached in ignored `.repo-local/stats.json` on that machine. A cache entry is reused for 24 hours while `HEAD` is unchanged; a new commit or an explicit refresh invalidates it.
+- Click a repository name or **Open** to open its detail page (`#/repo?<path>`). Missing stats are computed on demand; **Refresh stats** forces a recompute.
+- The detail page shows commit counts by **day** (30), **week** (26), **month** (24), and **year** (all years with commits), plus summary cards.
+- Results are cached in ignored `.repo-local/stats.json` on that machine. A cache entry is reused for 24 hours while `HEAD` is unchanged; a new commit or an explicit refresh invalidates it. Older cache entries without the timeline are recomputed automatically.
 - Portfolio totals sum only repositories that already have cached stats. List and detail views share the same cache entry per absolute path. Stats never fetch remotes and are not merged across machines.
 
 ## Local preview and tests
