@@ -1,5 +1,7 @@
 # AI Local History — Accounting Corrections Design
 
+> Historical design: all pricing, cost-estimation, and pricing-coverage sections were removed from the product on 2026-10-11. Identity, deduplication, attribution, reconciliation, and cache semantics remain current.
+
 **Date:** 2026-10-11
 
 **Status:** Implemented and verified locally

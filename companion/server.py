@@ -34,7 +34,6 @@ from ai.detect import detect_all, load_detect_cache, save_detect_cache  # noqa: 
 from ai.sessions import list_sessions  # noqa: E402
 from ai.usage import aggregate_usage  # noqa: E402
 from ai.search import search_transcripts  # noqa: E402
-from ai import prices as ai_prices  # noqa: E402
 
 ORIGINS = {
     "https://repo.theana.online",
@@ -977,7 +976,6 @@ class State:
         self.stats_path = self.config.parent / "stats.json"
         self.scan_path = self.config.parent / "scan.json"
         self.ai_detect_path = self.config.parent / "ai" / "detect.json"
-        self.ai_prices_path = self.config.parent / "ai" / "prices.json"
         self.ai_usage_cache_path = self.config.parent / "ai" / "usage.db"
         self.lock = threading.Lock()
         self.ai_cache_lock = threading.Lock()
@@ -991,7 +989,6 @@ class State:
         self.load_stats_cache()
         self.load_scan_cache()
         self.load_ai_detect_cache()
-        ai_prices.ensure_prices(self.ai_prices_path)
 
     def load_ai_detect_cache(self):
         self.ai_detect_cache = load_detect_cache(self.ai_detect_path)
@@ -1075,27 +1072,8 @@ class State:
                 session_ids=session_ids,
                 conversation_keys=conversation_keys,
                 compound_sessions=compound_sessions,
-                prices_path=self.ai_prices_path,
                 cache_path=self.ai_usage_cache_path,
             )
-
-    def get_ai_prices(self):
-        data = ai_prices.ensure_prices(self.ai_prices_path)
-        return {
-            "version": 1,
-            "path": str(self.ai_prices_path),
-            **data,
-        }
-
-    def update_ai_prices(self, data):
-        if not isinstance(data, dict):
-            raise ValueError("prices body must be an object.")
-        updated = ai_prices.update_prices(self.ai_prices_path, data)
-        return {
-            "version": 1,
-            "path": str(self.ai_prices_path),
-            **updated,
-        }
 
     def run_ai_search(self, data):
         q = data.get("q")
@@ -1425,10 +1403,6 @@ class Handler(BaseHTTPRequestHandler):
                 response = state.list_ai_sessions(data)
             elif self.command == "POST" and self.path == "/api/ai/usage":
                 response = state.list_ai_usage(data)
-            elif self.command == "GET" and self.path == "/api/ai/prices":
-                response = state.get_ai_prices()
-            elif self.command == "POST" and self.path == "/api/ai/prices":
-                response = state.update_ai_prices(data)
             elif self.command == "POST" and self.path == "/api/ai/search":
                 response = state.run_ai_search(data)
             else:

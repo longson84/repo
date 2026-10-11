@@ -43,7 +43,7 @@ Discovery walks up to three directory levels and skips hidden folders, dependenc
 
 The AI view distinguishes physical stores and transcript representations from logical conversations and executions. Child/subagent executions contribute token usage but do not inflate the conversation count. Token totals count unique provider/model calls: repeated streaming snapshots and copied provider message IDs are deduplicated.
 
-Cost is a retail API estimate, not an invoice. Models are priced only by an exact configured model or explicit alias, including effective-date bounds. Unknown or uncovered models keep their token totals but contribute zero estimated cost, and the UI marks the result as a partial estimate with a coverage percentage.
+The Tokens report can group usage by day, week, month, or year. Its project view expands each project into provider/model rows and shows input, cached input, output, cache-write, total token volume, share, and unique-call counts. Usage without project attribution appears as `Unattributed`.
 
 Codex surfaces are derived from rollout metadata (`desktop`, `terminal`, `vscode`, or `exec`). Its per-call totals are reported independently from cumulative counters; any disagreement appears under reconciliation and never silently rewrites token totals.
 
@@ -66,7 +66,6 @@ All of this is gitignored under `.repo-local/`:
 | `stats.json` | Stats cache (reuse ~24h while `HEAD` unchanged) |
 | `pairing-token` | Companion pairing secret |
 | `ai/detect.json` | Last AI store Detect snapshot |
-| `ai/prices.json` | Exact/dated local retail price overrides |
 | `ai/usage.db` | Rebuildable normalized token-usage cache (no transcript text) |
 
 **Disconnect** in the UI forgets the browser token. Restarting the companion reuses the same token unless you pass `--new-token`.
@@ -84,7 +83,7 @@ python3 -m unittest discover -s tests -v
 - `run` — memorable launcher (`python3 run repo`)
 - `dist/` — dashboard UI
 - `companion/server.py` — loopback API, discovery, scan, stats, AI detect
-- `companion/ai/` — AI store catalog, identity normalization, detection, usage, pricing, and cache
+- `companion/ai/` — AI store catalog, identity normalization, detection, usage, and cache
 - `tests/` — companion tests
 
 The companion only accepts local UI origins, a pairing token, and a loopback host. Paths must stay inside the `--root` folders you pass at start.

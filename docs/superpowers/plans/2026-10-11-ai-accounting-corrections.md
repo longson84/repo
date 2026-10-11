@@ -1,5 +1,7 @@
 # AI Accounting Corrections Implementation Plan
 
+> Historical implementation plan: pricing and pricing-coverage tasks were later removed. Identity, deduplication, attribution, reconciliation, and cache work remain current.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Produce trustworthy local AI conversation counts, unique token usage, surface attribution, reconciliation, pricing coverage, and fast repeat aggregation.

@@ -1,5 +1,7 @@
 # AI Local History Implementation Plan
 
+> Historical implementation plan: pricing and cost-estimation tasks no longer describe the product. The current implementation reports token usage only.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an AI sidebar to Theana that detects local AI chat stores, then lists sessions, estimates tokens/cost, searches transcripts, and exports — CLI-style tools first, Desktop/IDE deep parse later.

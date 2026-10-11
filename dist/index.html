@@ -139,6 +139,12 @@
         border-radius: 12px;
         overflow: hidden;
       }
+      .ai-table-scroll {
+        overflow-x: auto;
+      }
+      .ai-table-scroll .ai-table {
+        min-width: 920px;
+      }
       .ai-table th,
       .ai-table td {
         text-align: left;
@@ -161,6 +167,28 @@
         border-bottom: 0;
         background: #f3f5ee;
         font-weight: 650;
+      }
+      .ai-project-row td {
+        font-weight: 650;
+        background: #fbfcf8;
+      }
+      .ai-project-toggle {
+        width: 24px;
+        margin: -4px 6px -4px -6px;
+        padding: 4px;
+        border: 0;
+        background: transparent;
+        color: var(--green);
+        cursor: pointer;
+      }
+      .ai-project-model-row td:first-child {
+        padding-left: 38px;
+        color: var(--muted);
+      }
+      .ai-model-indent {
+        display: inline-block;
+        margin-right: 7px;
+        color: #abb1a5;
       }
       .ai-found {
         color: var(--green);

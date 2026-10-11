@@ -645,9 +645,11 @@ let aiSessionFilter = {
 let aiUsageFilter = {
   source: '',
 };
-let aiUsageGroup = 'model'; // model | project | period | surface | tool
+let aiUsageGroup = 'project'; // model | project | period | surface | tool
 let aiUsagePeriod = 'month'; // day | week | month | year
 let aiUsagePeriodKey = null; // selected period key within aiUsagePeriod
+let aiUsageProjectFilter = '';
+const aiUsageExpandedProjects = new Set();
 let aiSearchFilter = {
   q: '',
   source: '',
@@ -726,12 +728,7 @@ async function runAiUsage() {
     const body = {};
     if (aiUsageFilter.source) body.sources = [aiUsageFilter.source];
     aiUsage = await api('ai/usage', body);
-    const cost = aiUsage?.totals?.cost_usd;
-    toast(
-      cost == null
-        ? 'Usage aggregated.'
-        : `Estimated $${Number(cost).toFixed(2)} from local tokens.`,
-    );
+    toast('Usage aggregated.');
   } catch (error) {
     toast(error.message || 'Usage failed.');
   } finally {
@@ -782,24 +779,6 @@ function formatTokens(n) {
     return `${text}k`;
   }
   return Math.round(value).toLocaleString('en-US');
-}
-
-function formatUsd(n) {
-  if (n == null || Number.isNaN(Number(n))) return '—';
-  const value = Number(n);
-  if (value >= 100) {
-    return `$${Math.round(value).toLocaleString('en-US')}`;
-  }
-  if (value >= 1) {
-    return `$${value.toLocaleString('en-US', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })}`;
-  }
-  return `$${value.toLocaleString('en-US', {
-    minimumFractionDigits: 4,
-    maximumFractionDigits: 4,
-  })}`;
 }
 
 function paintAiDetectPanel() {
@@ -990,30 +969,78 @@ function formatAiPeriodLabel(period, grain = aiUsagePeriod) {
   return value;
 }
 
+function usageTokenVolume(item) {
+  return ['input_tokens', 'cached_tokens', 'output_tokens', 'cache_write_tokens'].reduce(
+    (sum, field) => sum + Number(item?.[field] || 0),
+    0,
+  );
+}
+
+function usageShare(item, denominator) {
+  const total = usageTokenVolume(item);
+  return denominator > 0 ? `${((total * 100) / denominator).toFixed(1)}%` : '—';
+}
+
+function usageCells(item, denominator) {
+  return `
+    <td>${esc(formatTokens(item.input_tokens))}</td>
+    <td>${esc(formatTokens(item.cached_tokens))}</td>
+    <td>${esc(formatTokens(item.output_tokens))}</td>
+    <td>${esc(formatTokens(item.cache_write_tokens))}</td>
+    <td>${esc(formatTokens(usageTokenVolume(item)))}</td>
+    <td>${esc(usageShare(item, denominator))}</td>
+    <td class="small">${esc(Number(item.events || 0).toLocaleString('en-US'))}</td>`;
+}
+
 function usageTotalRow(totals) {
   if (!totals) return '';
   return `<tr class="ai-total-row">
     <td>Total</td>
-    <td>${esc(formatTokens(totals.input_tokens))}</td>
-    <td>${esc(formatTokens(totals.cached_tokens))}</td>
-    <td>${esc(formatTokens(totals.output_tokens))}</td>
-    <td>${esc(formatUsd(totals.cost_usd))}</td>
-    <td class="small">${esc(Number(totals.events || 0).toLocaleString('en-US'))} unique calls</td>
+    ${usageCells(totals, usageTokenVolume(totals))}
   </tr>`;
 }
 
-function usageDataRows(list, labelFn) {
+function usageDataRows(list, labelFn, denominator) {
   return list
     .map((item) => {
       const label = labelFn(item);
       return `<tr>
         <td>${esc(label)}</td>
-        <td>${esc(formatTokens(item.input_tokens))}</td>
-        <td>${esc(formatTokens(item.cached_tokens))}</td>
-        <td>${esc(formatTokens(item.output_tokens))}</td>
-        <td>${esc(formatUsd(item.cost_usd))}</td>
-        <td class="small">${esc(Number(item.events || 0).toLocaleString('en-US'))} unique calls</td>
+        ${usageCells(item, denominator)}
       </tr>`;
+    })
+    .join('');
+}
+
+function aiProjectExpansionKey(project) {
+  return `${aiUsagePeriod}:${aiUsagePeriodKey}:${project}`;
+}
+
+function aiProjectLabel(project) {
+  return project === 'unknown' || !project ? 'Unattributed' : project;
+}
+
+function projectUsageRows(list, periodTotals) {
+  const periodVolume = usageTokenVolume(periodTotals);
+  return list
+    .map((project) => {
+      const projectName = aiProjectLabel(project.project);
+      const expansionKey = aiProjectExpansionKey(project.project || 'unknown');
+      const expanded = aiUsageExpandedProjects.has(expansionKey);
+      const modelRows = expanded
+        ? (project.by_model || [])
+            .map(
+              (model) => `<tr class="ai-project-model-row">
+                <td><span class="ai-model-indent">↳</span>${esc(model.provider || 'unknown')} / ${esc(model.model || 'unknown')}</td>
+                ${usageCells(model, usageTokenVolume(project))}
+              </tr>`,
+            )
+            .join('')
+        : '';
+      return `<tr class="ai-project-row">
+        <td><button type="button" class="ai-project-toggle" data-ai-project-toggle="${esc(project.project || 'unknown')}" aria-expanded="${expanded}" aria-label="${expanded ? 'Collapse' : 'Expand'} ${esc(projectName)}">${expanded ? '▾' : '▸'}</button>${esc(projectName)}</td>
+        ${usageCells(project, periodVolume)}
+      </tr>${modelRows}`;
     })
     .join('');
 }
@@ -1063,71 +1090,79 @@ function paintAiTokensPanel() {
     (aiUsageGroup === 'model' || aiUsageGroup === 'project') && selectedPeriod
       ? selectedPeriod
       : aiUsage?.totals;
-  const coverage = aiUsage?.pricing_coverage;
-  const coveragePercent = Number(coverage?.event_percentage);
-  const hasCoverage = Number.isFinite(coveragePercent);
-  const costLabel = hasCoverage && coveragePercent < 100 ? 'Partial estimate' : 'Estimate';
   const meta = aiUsage
-    ? `${formatTokens(scopeTotals.input_tokens)} in · ${formatTokens(scopeTotals.cached_tokens)} cached · ${formatTokens(scopeTotals.output_tokens)} out · ${costLabel} ${formatUsd(scopeTotals.cost_usd)}${hasCoverage ? ` · ${coveragePercent.toFixed(2)}% of unique calls priced` : ' · pricing coverage unavailable'} · ${esc(formatAiWhen(aiUsage.aggregatedAt))}`
+    ? `${formatTokens(scopeTotals.input_tokens)} in · ${formatTokens(scopeTotals.cached_tokens)} cached · ${formatTokens(scopeTotals.output_tokens)} out · ${formatTokens(scopeTotals.cache_write_tokens)} cache write · ${esc(formatAiWhen(aiUsage.aggregatedAt))}`
     : 'Usage not loaded yet.';
+  const projectList = (selectedPeriod?.by_project || []).filter((item) => {
+    const query = aiUsageProjectFilter.trim().toLowerCase();
+    return !query || aiProjectLabel(item.project).toLowerCase().includes(query);
+  });
+  const allProjectsExpanded =
+    projectList.length > 0 &&
+    projectList.every((item) =>
+      aiUsageExpandedProjects.has(aiProjectExpansionKey(item.project || 'unknown')),
+    );
 
   let rows = '';
   let totalRow = '';
   let firstCol = 'Model';
   if (!paired) {
-    rows = `<tr><td colspan="6"><div class="callout">Connect the companion to estimate token cost.</div></td></tr>`;
+    rows = `<tr><td colspan="8"><div class="callout">Connect the companion to aggregate token usage.</div></td></tr>`;
   } else if (!aiUsage) {
-    rows = `<tr><td colspan="6"><div class="callout">Click Aggregate to sum Antigravity, Claude Code, and Codex usage from local stores.</div></td></tr>`;
+    rows = `<tr><td colspan="8"><div class="callout">Click Aggregate to sum Antigravity, Claude Code, and Codex usage from local stores.</div></td></tr>`;
   } else if (aiUsageGroup === 'period') {
     firstCol = aiUsagePeriod[0].toUpperCase() + aiUsagePeriod.slice(1);
     if (!series.length) {
-      rows = `<tr><td colspan="6"><div class="callout">No dated usage events found.</div></td></tr>`;
+      rows = `<tr><td colspan="8"><div class="callout">No dated usage events found.</div></td></tr>`;
     } else {
-      rows = usageDataRows(series, (item) => formatAiPeriodLabel(item.period, aiUsagePeriod));
+      rows = usageDataRows(
+        series,
+        (item) => formatAiPeriodLabel(item.period, aiUsagePeriod),
+        usageTokenVolume(aiUsage.totals),
+      );
       totalRow = usageTotalRow(aiUsage.totals);
     }
   } else if (aiUsageGroup === 'model') {
     firstCol = 'Model';
     const list = selectedPeriod?.by_model || [];
     if (!selectedPeriod) {
-      rows = `<tr><td colspan="6"><div class="callout">No dated usage events found.</div></td></tr>`;
+      rows = `<tr><td colspan="8"><div class="callout">No dated usage events found.</div></td></tr>`;
     } else if (!list.length) {
-      rows = `<tr><td colspan="6"><div class="callout">No model usage in ${esc(formatAiPeriodLabel(selectedKey))}.</div></td></tr>`;
+      rows = `<tr><td colspan="8"><div class="callout">No model usage in ${esc(formatAiPeriodLabel(selectedKey))}.</div></td></tr>`;
     } else {
       rows = usageDataRows(
         list,
-        (item) =>
-          `${item.provider || 'unknown'} / ${item.model || 'unknown'}${item.pricing_status && item.pricing_status !== 'priced' ? ` · ${item.pricing_status}` : ''}`,
+        (item) => `${item.provider || 'unknown'} / ${item.model || 'unknown'}`,
+        usageTokenVolume(selectedPeriod),
       );
       totalRow = usageTotalRow(selectedPeriod);
     }
   } else if (aiUsageGroup === 'project') {
     firstCol = 'Project';
-    const list = selectedPeriod?.by_project || [];
     if (!selectedPeriod) {
-      rows = `<tr><td colspan="6"><div class="callout">No dated usage events found.</div></td></tr>`;
-    } else if (!list.length) {
-      rows = `<tr><td colspan="6"><div class="callout">No project usage in ${esc(formatAiPeriodLabel(selectedKey))}.</div></td></tr>`;
+      rows = `<tr><td colspan="8"><div class="callout">No dated usage events found.</div></td></tr>`;
+    } else if (!projectList.length) {
+      rows = `<tr><td colspan="8"><div class="callout">No matching project usage in ${esc(formatAiPeriodLabel(selectedKey))}.</div></td></tr>`;
     } else {
-      rows = usageDataRows(list, (item) => item.project || '—');
+      rows = projectUsageRows(projectList, selectedPeriod);
       totalRow = usageTotalRow(selectedPeriod);
     }
   } else if (aiUsageGroup === 'surface') {
     firstCol = 'Surface';
     const list = aiUsage.by_surface || [];
     if (!list.length) {
-      rows = `<tr><td colspan="6"><div class="callout">No usage events found for these sources.</div></td></tr>`;
+      rows = `<tr><td colspan="8"><div class="callout">No usage events found for these sources.</div></td></tr>`;
     } else {
-      rows = usageDataRows(list, (item) => item.label || '—');
+      rows = usageDataRows(list, (item) => item.label || '—', usageTokenVolume(aiUsage.totals));
       totalRow = usageTotalRow(aiUsage.totals);
     }
   } else {
     firstCol = 'Tool';
     const list = aiUsage.by_tool || [];
     if (!list.length) {
-      rows = `<tr><td colspan="6"><div class="callout">No usage events found for these sources.</div></td></tr>`;
+      rows = `<tr><td colspan="8"><div class="callout">No usage events found for these sources.</div></td></tr>`;
     } else {
-      rows = usageDataRows(list, (item) => item.tool || '—');
+      rows = usageDataRows(list, (item) => item.tool || '—', usageTokenVolume(aiUsage.totals));
       totalRow = usageTotalRow(aiUsage.totals);
     }
   }
@@ -1152,9 +1187,13 @@ function paintAiTokensPanel() {
         : '';
 
   const caveats = (aiUsage?.caveats || []).map((c) => `<li>${esc(c)}</li>`).join('');
-  const priceNotes = aiUsage?.prices?.notes
-    ? `<p class="small" style="margin-top: 12px">${esc(aiUsage.prices.notes)}</p>`
-    : '';
+  const projectControls =
+    aiUsageGroup === 'project'
+      ? `<label class="small" for="aiUsageProjectFilter">Project
+          <input id="aiUsageProjectFilter" value="${esc(aiUsageProjectFilter)}" placeholder="Filter projects" />
+        </label>
+        <button type="button" class="btn" id="aiUsageExpandProjects" ${!projectList.length ? 'disabled' : ''}>${allProjectsExpanded ? 'Collapse all' : 'Expand all'}</button>`
+      : '';
   const warningCount = Number(aiUsage?.quality?.warning_count || 0);
   const reconciliation = aiUsage?.quality?.reconciliation || {};
   const reconciliationDifferences = Number(reconciliation.different || 0);
@@ -1184,31 +1223,35 @@ function paintAiTokensPanel() {
       <select id="aiUsageGroup">
         ${groupOptions}
       </select>
+      ${projectControls}
       <button class="btn primary" id="aiUsageBtn" ${!paired || aiBusy ? 'disabled' : ''}>
         ${aiBusy && aiTab === 'tokens' ? 'Aggregating…' : '<span class="arrow">⟳</span> Aggregate'}
       </button>
     </div>
     ${periodNav}
     <div class="machine-meta" style="margin: 0 0 18px">${meta}</div>
-    <table class="ai-table">
-      <thead>
-        <tr>
-          <th>${esc(firstCol)}</th>
-          <th>Input</th>
-          <th>Cached</th>
-          <th>Output</th>
-          <th>Est. $</th>
-          <th>Unique calls</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-      ${totalRow ? `<tfoot>${totalRow}</tfoot>` : ''}
-    </table>
+    <div class="ai-table-scroll">
+      <table class="ai-table">
+        <thead>
+          <tr>
+            <th>${esc(firstCol)}</th>
+            <th>Input</th>
+            <th>Cached</th>
+            <th>Output</th>
+            <th>Cache write</th>
+            <th>Total</th>
+            <th>Share</th>
+            <th>Unique calls</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+        ${totalRow ? `<tfoot>${totalRow}</tfoot>` : ''}
+      </table>
+    </div>
     ${qualityNotes}
     ${caveats
       ? `<div class="callout" style="margin-top: 18px"><strong>Caveats</strong><ul style="margin: 8px 0 0; padding-left: 18px">${caveats}</ul></div>`
       : ''}
-    ${priceNotes}
   `;
 }
 
@@ -1378,6 +1421,39 @@ function paintAi() {
   if ($('aiUsageGroup')) {
     $('aiUsageGroup').onchange = (event) => {
       aiUsageGroup = event.target.value;
+      paintAi();
+    };
+  }
+  if ($('aiUsageProjectFilter')) {
+    $('aiUsageProjectFilter').oninput = (event) => {
+      aiUsageProjectFilter = event.target.value;
+      paintAi();
+      const input = $('aiUsageProjectFilter');
+      input?.focus();
+      input?.setSelectionRange(input.value.length, input.value.length);
+    };
+  }
+  document.querySelectorAll('[data-ai-project-toggle]').forEach((button) => {
+    button.onclick = () => {
+      const key = aiProjectExpansionKey(button.dataset.aiProjectToggle || 'unknown');
+      if (aiUsageExpandedProjects.has(key)) aiUsageExpandedProjects.delete(key);
+      else aiUsageExpandedProjects.add(key);
+      paintAi();
+    };
+  });
+  if ($('aiUsageExpandProjects')) {
+    $('aiUsageExpandProjects').onclick = () => {
+      const selected = aiPeriodSeries().find((row) => row.period === aiUsagePeriodKey);
+      const query = aiUsageProjectFilter.trim().toLowerCase();
+      const visible = (selected?.by_project || []).filter(
+        (item) => !query || aiProjectLabel(item.project).toLowerCase().includes(query),
+      );
+      const keys = visible.map((item) => aiProjectExpansionKey(item.project || 'unknown'));
+      const expand = keys.some((key) => !aiUsageExpandedProjects.has(key));
+      keys.forEach((key) => {
+        if (expand) aiUsageExpandedProjects.add(key);
+        else aiUsageExpandedProjects.delete(key);
+      });
       paintAi();
     };
   }

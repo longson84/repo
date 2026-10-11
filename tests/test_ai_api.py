@@ -96,11 +96,10 @@ class AiApiTests(unittest.TestCase):
         self.assertEqual(data["sources"], ["claude.code"])
         self.assertIsInstance(data["count"], int)
 
-    def test_usage_and_prices(self):
+    def test_usage_exposes_tokens_without_pricing(self):
         status, prices = self.request("GET", "/api/ai/prices")
-        self.assertEqual(status, 200)
-        self.assertEqual(prices["currency"], "USD")
-        self.assertIn("gemini-3-flash", prices["per_million"])
+        self.assertEqual(status, 404)
+        self.assertEqual(prices["error"], "Unknown endpoint.")
         status, usage = self.request(
             "POST",
             "/api/ai/usage",
@@ -112,13 +111,15 @@ class AiApiTests(unittest.TestCase):
         self.assertIn("caveats", usage)
         self.assertIn(usage["cache"]["status"], {"rebuilt", "ready"})
         self.assertIn("hits", usage["cache"])
+        self.assertNotIn("cost_usd", usage["totals"])
+        self.assertNotIn("pricing_coverage", usage)
+        self.assertNotIn("prices", usage)
 
-    def test_api_exposes_pricing_quality_reconciliation_and_cache_metadata(self):
+    def test_api_exposes_quality_reconciliation_and_cache_metadata(self):
         status, usage = self.request(
             "POST", "/api/ai/usage", {"sources": ["claude.code"]}
         )
         self.assertEqual(status, 200)
-        self.assertIn("pricing_coverage", usage)
         self.assertIn("warning_count", usage["quality"])
         self.assertIn("reconciliation", usage)
         self.assertIn("status", usage["cache"])

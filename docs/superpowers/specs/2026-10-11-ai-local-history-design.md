@@ -1,5 +1,7 @@
 # AI Local History — Design Spec
 
+> Historical design: all pricing, cost-estimation, and pricing-coverage sections were removed from the product on 2026-10-11. The current product reports token usage only.
+
 **Date:** 2026-10-11  
 **Status:** Implemented foundation; accounting semantics superseded by `2026-10-11-ai-accounting-corrections-design.md`
 **Product:** Theana / Repo local dashboard

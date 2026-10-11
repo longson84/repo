@@ -478,7 +478,7 @@ class AggregateUsageTests(unittest.TestCase):
             self.assertEqual(second["cache"]["hits"], 1)
             self.assertEqual(second["totals"]["input_tokens"], 4)
 
-    def test_aggregate_reports_partial_pricing_coverage(self):
+    def test_aggregate_reports_tokens_without_pricing_metadata(self):
         source = {"id": "codex.home", "path": "/synthetic", "surface": "unknown"}
         events = [
             {
@@ -510,7 +510,6 @@ class AggregateUsageTests(unittest.TestCase):
                 "cache_write_tokens": 0,
             },
         ]
-        table = {"per_million": {"gpt-known": {"input": 1.0, "output": 2.0}}}
         with (
             mock.patch.object(usage_mod, "resolve_sources", return_value=[source]),
             mock.patch.object(
@@ -518,18 +517,15 @@ class AggregateUsageTests(unittest.TestCase):
                 "_collect_source_usage",
                 return_value={"events": events, "warnings": [], "reconciliation": []},
             ),
-            mock.patch.object(usage_mod.prices_mod, "DEFAULT_PRICES", table),
         ):
             result = usage_mod.aggregate_usage(sources=["codex.home"])
 
-        coverage = result["pricing_coverage"]
-        self.assertEqual(coverage["priced_events"], 1)
-        self.assertEqual(coverage["unpriced_events"], 1)
-        self.assertEqual(coverage["event_percentage"], 50.0)
-        self.assertEqual(coverage["priced_tokens"]["total"], 150)
-        self.assertEqual(coverage["unpriced_tokens"]["total"], 100)
-        self.assertEqual(coverage["token_percentage"], 60.0)
         self.assertEqual(result["totals"]["input_tokens"], 150)
+        self.assertEqual(result["totals"]["output_tokens"], 100)
+        self.assertNotIn("cost_usd", result["totals"])
+        self.assertNotIn("pricing_coverage", result)
+        self.assertNotIn("prices", result)
+        self.assertTrue(all("pricing_status" not in row for row in result["by_model"]))
 
     def test_same_model_label_from_different_providers_has_separate_rows(self):
         source = {"id": "codex.home", "path": "/synthetic", "surface": "unknown"}
@@ -564,6 +560,109 @@ class AggregateUsageTests(unittest.TestCase):
             {(row["provider"], row["model"]) for row in result["by_model"]},
             {("openai", "shared-name"), ("anthropic", "shared-name")},
         )
+
+    def test_period_projects_include_separate_model_breakdowns(self):
+        source = {"id": "codex.home", "path": "/synthetic", "surface": "unknown"}
+        base = {
+            "source_id": "codex.home",
+            "tool": "codex",
+            "surface": "terminal",
+            "date": "2026-09-15",
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+        }
+        events = [
+            {
+                **base,
+                "event_key": "alpha-openai",
+                "conversation_key": "codex:one",
+                "project": "alpha",
+                "provider": "openai",
+                "model": "shared",
+                "input_tokens": 100,
+                "output_tokens": 10,
+            },
+            {
+                **base,
+                "event_key": "alpha-anthropic",
+                "conversation_key": "codex:two",
+                "project": "alpha",
+                "provider": "anthropic",
+                "model": "shared",
+                "input_tokens": 50,
+                "output_tokens": 5,
+            },
+            {
+                **base,
+                "event_key": "beta-openai",
+                "conversation_key": "codex:three",
+                "project": "beta",
+                "provider": "openai",
+                "model": "shared",
+                "input_tokens": 25,
+                "output_tokens": 2,
+            },
+        ]
+        with (
+            mock.patch.object(usage_mod, "resolve_sources", return_value=[source]),
+            mock.patch.object(
+                usage_mod,
+                "_collect_source_usage",
+                return_value={"events": events, "warnings": [], "reconciliation": []},
+            ),
+        ):
+            result = usage_mod.aggregate_usage(sources=["codex.home"])
+
+        september = next(
+            row for row in result["by_month"] if row["period"] == "2026-09"
+        )
+        projects = {row["project"]: row for row in september["by_project"]}
+        alpha_models = {
+            (row["provider"], row["model"]): row
+            for row in projects["alpha"]["by_model"]
+        }
+
+        self.assertEqual(set(projects), {"alpha", "beta"})
+        self.assertEqual(projects["alpha"]["input_tokens"], 150)
+        self.assertEqual(projects["alpha"]["events"], 2)
+        self.assertEqual(
+            set(alpha_models), {("openai", "shared"), ("anthropic", "shared")}
+        )
+        self.assertEqual(alpha_models[("openai", "shared")]["output_tokens"], 10)
+        self.assertEqual(
+            september["input_tokens"],
+            sum(project["input_tokens"] for project in projects.values()),
+        )
+        self.assertEqual(
+            projects["alpha"]["input_tokens"],
+            sum(model["input_tokens"] for model in projects["alpha"]["by_model"]),
+        )
+        self.assertEqual(
+            [project["project"] for project in september["by_project"]],
+            ["alpha", "beta"],
+        )
+        self.assertEqual(
+            [model["provider"] for model in projects["alpha"]["by_model"]],
+            ["openai", "anthropic"],
+        )
+        for series_name in ("by_day", "by_week", "by_month", "by_year"):
+            period = result[series_name][0]
+            for field in (
+                "input_tokens",
+                "cached_tokens",
+                "output_tokens",
+                "cache_write_tokens",
+                "events",
+            ):
+                self.assertEqual(
+                    period[field],
+                    sum(project[field] for project in period["by_project"]),
+                )
+                for project in period["by_project"]:
+                    self.assertEqual(
+                        project[field],
+                        sum(model[field] for model in project["by_model"]),
+                    )
 
     def test_antigravity_duplicate_step_identity_is_counted_once_across_sources(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -616,16 +715,14 @@ class AggregateUsageTests(unittest.TestCase):
             )
             con.commit()
             con.close()
-            prices_path = home / "prices.json"
             result = usage_mod.aggregate_usage(
                 sources=["antigravity.app"],
                 home=home,
-                prices_path=prices_path,
             )
             self.assertIn("by_model", result)
             self.assertIn("by_surface", result)
             self.assertIn("by_date", result)
-            self.assertAlmostEqual(result["totals"]["cost_usd"], 0.75, places=4)
+            self.assertNotIn("cost_usd", result["totals"])
             self.assertEqual(result["totals"]["input_tokens"], 1_000_000)
             models = {row["model"]: row for row in result["by_model"]}
             self.assertIn("gemini-3-flash", models)
@@ -665,7 +762,6 @@ class AggregateUsageTests(unittest.TestCase):
             result = usage_mod.aggregate_usage(
                 sources=["claude.code"],
                 home=home,
-                prices_path=home / "prices.json",
             )
             self.assertEqual(len(result["by_day"]), 3)
             self.assertEqual(len(result["by_month"]), 2)
