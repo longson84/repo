@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -122,6 +123,100 @@ class AiApiTests(unittest.TestCase):
         status, error = self.request("POST", "/api/project-identities", invalid)
         self.assertEqual(status, 400)
         self.assertIn("alias", error["error"])
+
+    def test_project_identity_api_returns_fingerprint_and_rejects_stale_write(self):
+        status, initial = self.request("GET", "/api/project-identities")
+        self.assertEqual(status, 200)
+        self.assertRegex(initial["fingerprint"], r"^[0-9a-f]{64}$")
+
+        status, newer = self.request(
+            "POST",
+            "/api/project-identities",
+            {
+                "version": 1,
+                "projects": [{"id": "newer", "name": "Newer"}],
+                "expected_fingerprint": initial["fingerprint"],
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertNotEqual(newer["fingerprint"], initial["fingerprint"])
+
+        status, conflict = self.request(
+            "POST",
+            "/api/project-identities",
+            {
+                "version": 1,
+                "projects": [{"id": "stale", "name": "Stale"}],
+                "expected_fingerprint": initial["fingerprint"],
+            },
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(conflict["code"], "identity_config_conflict")
+
+        status, loaded = self.request("GET", "/api/project-identities")
+        self.assertEqual(status, 200)
+        self.assertEqual(loaded["projects"], newer["projects"])
+
+    def test_project_grouping_save_preserves_tracking_and_advanced_fields(self):
+        workspace = str((self.root / "proj").resolve())
+        subprocess.run(
+            ["git", "-C", workspace, "init", "-b", "main"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.server.state.select([workspace])
+        repository_id = self.server.state.workspace_inventory()[0]["repository_id"]
+        settings_before = self.config.read_bytes()
+        existing = {
+            "version": 1,
+            "projects": [
+                {
+                    "id": "general",
+                    "name": "General",
+                    "repositories": [
+                        repository_id,
+                        "remote:github.com/example/hidden",
+                    ],
+                    "primary_workspaces": {
+                        "remote:github.com/example/hidden": workspace
+                    },
+                    "workspace_aliases": [workspace],
+                }
+            ],
+        }
+        self.module.save_identity_config(self.server.state.identity_path, existing)
+        status, current = self.request("GET", "/api/project-identities")
+        self.assertEqual(status, 200)
+
+        status, saved = self.request(
+            "POST",
+            "/api/project-identities",
+            {
+                **existing,
+                "projects": [{**existing["projects"][0], "name": "General Tools"}],
+                "expected_fingerprint": current["fingerprint"],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["projects"][0]["name"], "General Tools")
+        self.assertEqual(
+            saved["projects"][0]["repositories"],
+            [repository_id, "remote:github.com/example/hidden"],
+        )
+        self.assertEqual(
+            saved["projects"][0]["primary_workspaces"],
+            {"remote:github.com/example/hidden": workspace},
+        )
+        self.assertEqual(saved["projects"][0]["workspace_aliases"], [workspace])
+        self.assertEqual(self.config.read_bytes(), settings_before)
+        self.assertEqual(self.server.state.paths, [workspace])
+        self.assertEqual(self.server.state.identity_path.stat().st_mode & 0o777, 0o600)
+
+        status, state = self.request("GET", "/api/status")
+        self.assertEqual(status, 200)
+        self.assertEqual(state["workspaces"][0]["project_id"], "general")
 
     def test_status_keeps_paths_and_adds_canonical_workspaces(self):
         status, payload = self.request("GET", "/api/status")

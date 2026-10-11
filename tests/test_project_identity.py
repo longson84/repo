@@ -136,6 +136,29 @@ class ConfigTests(unittest.TestCase):
                 with self.subTest(payload=payload), self.assertRaises(ValueError):
                     save_identity_config(path, payload)
 
+    def test_project_names_are_unique_case_insensitively(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "identities.json"
+            duplicate_names = {
+                "version": 1,
+                "projects": [
+                    {"id": "alpha", "name": "Alpha"},
+                    {"id": "other", "name": " alpha "},
+                ],
+            }
+
+            with self.assertRaisesRegex(ValueError, "name"):
+                save_identity_config(path, duplicate_names)
+
+            saved = save_identity_config(
+                path,
+                {
+                    "version": 1,
+                    "projects": [{"id": "alpha", "name": " Alpha "}],
+                },
+            )
+            self.assertEqual(saved["projects"][0]["name"], "Alpha")
+
     def test_repository_and_alias_cannot_belong_to_two_projects(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "identities.json"

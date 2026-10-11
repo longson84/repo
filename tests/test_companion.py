@@ -111,6 +111,57 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual(state.identity_path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(state.workspace_inventory()[0]["project_id"], "configured")
 
+    def test_identity_payload_refreshes_external_changes_and_invalidates_derived_caches(self):
+        api = self.api()
+        state = api.State([self.root], self.root / "settings.json")
+        original_fingerprint = state.identity_resolver.fingerprint()
+        state.stats_cache = {"version": 2, "repos": {"old": {"value": True}}}
+        state.scan_cache = {
+            "version": 2,
+            "scannedAt": "2026-10-11T00:00:00+00:00",
+            "repos": {"old": {"value": True}},
+        }
+        api.save_identity_config(
+            state.identity_path,
+            {
+                "version": 1,
+                "projects": [{"id": "external", "name": "External"}],
+            },
+        )
+
+        payload = state.identity_payload()
+
+        self.assertEqual(payload["projects"][0]["id"], "external")
+        self.assertNotEqual(payload["fingerprint"], original_fingerprint)
+        self.assertEqual(state.stats_cache, {"version": 2, "repos": {}})
+        self.assertEqual(
+            state.scan_cache, {"version": 2, "scannedAt": None, "repos": {}}
+        )
+
+    def test_stale_identity_fingerprint_does_not_overwrite_newer_file(self):
+        api = self.api()
+        state = api.State([self.root], self.root / "settings.json")
+        stale_fingerprint = state.identity_resolver.fingerprint()
+        api.save_identity_config(
+            state.identity_path,
+            {
+                "version": 1,
+                "projects": [{"id": "newer", "name": "Newer"}],
+            },
+        )
+        newer_bytes = state.identity_path.read_bytes()
+
+        with self.assertRaises(api.IdentityConfigConflict):
+            state.save_identity_config(
+                {
+                    "version": 1,
+                    "projects": [{"id": "stale", "name": "Stale"}],
+                },
+                expected_fingerprint=stale_fingerprint,
+            )
+
+        self.assertEqual(state.identity_path.read_bytes(), newer_bytes)
+
     def test_version_one_derived_caches_are_rebuilt_without_touching_identity(self):
         api = self.api()
         repo = self.repo("migration")

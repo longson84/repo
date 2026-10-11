@@ -61,6 +61,10 @@ DEFAULT_TOKEN_FILE = REPO_ROOT / ".repo-local" / "pairing-token"
 DEFAULT_DIST = REPO_ROOT / "dist"
 
 
+class IdentityConfigConflict(ValueError):
+    """Raised when an identity write is based on a stale configuration."""
+
+
 def load_or_create_token(path, *, rotate=False):
     """Stable pairing token in .repo-local; regenerate only when rotate=True."""
     path = Path(path)
@@ -1112,11 +1116,7 @@ class State:
         self.identity_config_warnings = warnings
         return config
 
-    def save_identity_config(self, payload):
-        saved = save_identity_config(self.identity_path, payload)
-        self.identity_config = saved
-        self.identity_resolver = ProjectIdentityResolver(saved)
-        self.identity_config_warnings = []
+    def invalidate_identity_caches(self):
         self.stats_cache = {"version": STATS_CACHE_VERSION, "repos": {}}
         self.scan_cache = {
             "version": SCAN_CACHE_VERSION,
@@ -1125,6 +1125,26 @@ class State:
         }
         self.save_stats_cache()
         self.save_scan_cache()
+
+    def install_identity_config(self, config, warnings=None, *, invalidate=False):
+        self.identity_config = config
+        self.identity_resolver = ProjectIdentityResolver(config)
+        self.identity_config_warnings = list(warnings or [])
+        if invalidate:
+            self.invalidate_identity_caches()
+
+    def save_identity_config(self, payload, expected_fingerprint=None):
+        current = load_identity_config(self.identity_path)
+        current_fingerprint = ProjectIdentityResolver(current).fingerprint()
+        if expected_fingerprint is not None:
+            if not isinstance(expected_fingerprint, str):
+                raise ValueError("expected_fingerprint must be a string")
+            if expected_fingerprint != current_fingerprint:
+                raise IdentityConfigConflict(
+                    "Project grouping changed in another editor. Reload and try again."
+                )
+        saved = save_identity_config(self.identity_path, payload)
+        self.install_identity_config(saved, invalidate=True)
         return saved
 
     def decorate_workspace(self, item):
@@ -1139,6 +1159,19 @@ class State:
         ]
 
     def identity_payload(self):
+        previous_fingerprint = self.identity_resolver.fingerprint()
+        try:
+            disk_config = load_identity_config(self.identity_path)
+            disk_warnings = []
+        except ValueError:
+            disk_config = dict(EMPTY_CONFIG)
+            disk_warnings = [{"code": "invalid_identity_config"}]
+        disk_fingerprint = ProjectIdentityResolver(disk_config).fingerprint()
+        self.install_identity_config(
+            disk_config,
+            disk_warnings,
+            invalidate=disk_fingerprint != previous_fingerprint,
+        )
         warnings = list(self.identity_config_warnings)
         seen = {(item.get("code"), item.get("workspace_id")) for item in warnings}
         for workspace in self.workspace_inventory():
@@ -1149,7 +1182,11 @@ class State:
                         {"code": code, "workspace_id": workspace["workspace_id"]}
                     )
                     seen.add(key)
-        return {**self.identity_config, "warnings": warnings}
+        return {
+            **self.identity_config,
+            "warnings": warnings,
+            "fingerprint": self.identity_resolver.fingerprint(),
+        }
 
     def load_ai_detect_cache(self):
         self.ai_detect_cache = load_detect_cache(self.ai_detect_path)
@@ -1623,7 +1660,10 @@ class Handler(BaseHTTPRequestHandler):
             elif self.command == "GET" and self.path == "/api/project-identities":
                 response = state.identity_payload()
             elif self.command == "POST" and self.path == "/api/project-identities":
-                state.save_identity_config(data)
+                state.save_identity_config(
+                    {"version": data.get("version"), "projects": data.get("projects")},
+                    expected_fingerprint=data.get("expected_fingerprint"),
+                )
                 response = state.identity_payload()
             elif self.command == "POST" and self.path == "/api/discover":
                 response = {"repositories": state.discover(data["root"])}
@@ -1697,6 +1737,11 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 return self.send_json(404, {"error": "Unknown endpoint."})
             self.send_json(200, response)
+        except IdentityConfigConflict as error:
+            self.send_json(
+                409,
+                {"error": str(error), "code": "identity_config_conflict"},
+            )
         except (ValueError, KeyError, OSError, TypeError) as error:
             self.send_json(
                 400,

@@ -118,6 +118,7 @@ def _normalize_config(payload: Mapping[str, Any], *, strict: bool) -> dict[str, 
 
     normalized_projects = []
     project_ids: set[str] = set()
+    project_name_owners: dict[str, str] = {}
     repository_owners: dict[str, str] = {}
     alias_owners: dict[str, str] = {}
     for raw_project in projects:
@@ -131,6 +132,11 @@ def _normalize_config(payload: Mapping[str, Any], *, strict: bool) -> dict[str, 
             raise ValueError(f"duplicate project id: {project_id}")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("project name must be a non-empty string")
+        normalized_name = name.strip()
+        name_owner = project_name_owners.get(normalized_name.casefold())
+        if strict and name_owner and name_owner != project_id:
+            raise ValueError(f"duplicate project name: {normalized_name}")
+        project_name_owners.setdefault(normalized_name.casefold(), project_id)
         project_ids.add(project_id)
 
         raw_repositories = raw_project.get("repositories", [])
@@ -174,7 +180,7 @@ def _normalize_config(payload: Mapping[str, Any], *, strict: bool) -> dict[str, 
         normalized_projects.append(
             {
                 "id": project_id,
-                "name": name.strip(),
+                "name": normalized_name,
                 "repositories": repositories,
                 "primary_workspaces": primaries,
                 "workspace_aliases": aliases,
