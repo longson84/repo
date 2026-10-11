@@ -241,7 +241,9 @@ def _scan_text_file(
         with path.open(encoding="utf-8", errors="replace") as handle:
             for lineno, line in enumerate(handle, start=1):
                 if needle_l in line.lower():
-                    hits.append(_hit(target=target, line=lineno, text=line, needle=needle))
+                    hits.append(
+                        _hit(target=target, line=lineno, text=line, needle=needle)
+                    )
                     if len(hits) >= remaining:
                         break
     except OSError:
@@ -297,9 +299,7 @@ def _scan_sqlite_blobs(
                         display = "\n".join(parts)
             except json.JSONDecodeError:
                 pass
-        hits.append(
-            _hit(target=target, line=int(rowid), text=display, needle=needle)
-        )
+        hits.append(_hit(target=target, line=int(rowid), text=display, needle=needle))
         if len(hits) >= remaining:
             break
     return hits
@@ -453,9 +453,7 @@ def search_transcripts(
         hits = _python_search(targets, query, limit)
     elif sqlite_targets and len(hits) < limit:
         # rg cannot search store.db; fill remaining from sqlite blobs.
-        hits.extend(
-            _python_search(sqlite_targets, query, limit - len(hits))
-        )
+        hits.extend(_python_search(sqlite_targets, query, limit - len(hits)))
 
     truncated = len(hits) >= limit
     hits = hits[:limit]

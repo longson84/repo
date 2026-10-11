@@ -1,7 +1,7 @@
 # AI Local History — Design Spec
 
 **Date:** 2026-10-11  
-**Status:** Approved direction (Detect first-class for six sources; deep features CLI-first)  
+**Status:** Implemented foundation; accounting semantics superseded by `2026-10-11-ai-accounting-corrections-design.md`
 **Product:** Theana / Repo local dashboard
 
 ## Intent
@@ -10,8 +10,8 @@ Add an **AI** area to the local Repo dashboard so the user can inventory, measur
 
 Success looks like:
 
-1. One Detect pass shows every relevant local store (present / missing, size, session estimate).
-2. Sessions from well-understood tools can be listed, token/cost estimated, searched, and exported.
+1. One Detect pass shows every relevant local store and separates representations, conversations, and executions.
+2. Logical conversations from well-understood tools can be listed, unique token usage/cost estimated, searched, and exported.
 3. Claude Desktop and Cursor IDE appear in Detect immediately; deeper parsing follows after CLI-style adapters.
 
 ## Non-goals
@@ -65,15 +65,17 @@ Optional later (Detect may note if present, not required for v1): Copilot, Herme
 UI (dist/)  --JSON-->  Companion (companion/server.py)
                               |
                               +-- ai/catalog.py     known sources + env overrides
-                              +-- ai/detect.py      existence, size, session estimates
+                              +-- ai/detect.py      stores, representations, conversations, executions
                               +-- ai/adapters/      per-tool list / usage / text / export
-                              +-- ai/prices.py      cost table + estimate
+                              +-- ai/prices.py      exact/dated rates + coverage-aware estimate
+                              +-- ai/usage_cache.py normalized incremental usage cache
                               +-- ai/search.py      transcript search
                               +-- ai/export.py      write exports under .repo-local
                               |
                          .repo-local/ai/
                               detect.json
                               prices.json
+                              usage.db
                               search.db          (optional, phase 4+)
                               exports/
 ```
@@ -108,9 +110,9 @@ Add **AI** next to existing Repositories / Stats navigation. Route hash: `#/ai` 
 
 ### Views
 
-1. **Detect** — button “Detect”, table grouped by tool: surface, path, status, size, sessions≈, notes. Cache last run.
-2. **Sessions** — filter by tool/surface; list summaries; open detail later if needed.
-3. **Tokens / cost** — aggregate by tool → model → surface; show input / cache / output / $; editable rates note; caveats callout.
+1. **Detect** — button “Detect”, table grouped by tool: surface, path, status, size, conversations, executions, representations, notes. Cache last run.
+2. **Conversations** — filter by tool/surface; list logical conversations and execution counts; open detail later if needed.
+3. **Tokens / cost** — aggregate unique provider/model calls by tool, model, project, period, and surface; show token dimensions, partial pricing coverage, reconciliation, and cache quality.
 4. **Search** — query box + tool checkboxes; results with snippet + source + session id.
 5. **Export** — pick scope (session / source / all wave-1) + format (Markdown, JSONL, CSV summary) → path under `.repo-local/ai/exports/`.
 

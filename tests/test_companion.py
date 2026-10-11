@@ -122,7 +122,9 @@ class CompanionTests(unittest.TestCase):
         (repo / "app.py").write_text("print(1)\n")
         self.git(repo, "add", ".")
         self.git(repo, "commit", "-m", "second")
-        self.git(repo, "remote", "add", "origin", "https://github.com/example/stats-repo.git")
+        self.git(
+            repo, "remote", "add", "origin", "https://github.com/example/stats-repo.git"
+        )
         calls = []
         original = api.git
 
@@ -162,14 +164,20 @@ class CompanionTests(unittest.TestCase):
             result["linesTotal"]["additions"] - result["linesTotal"]["deletions"],
         )
         self.assertIsInstance(result["linesByDate"], dict)
-        self.assertGreater(sum(item["additions"] for item in result["linesByDate"].values()), 0)
+        self.assertGreater(
+            sum(item["additions"] for item in result["linesByDate"].values()), 0
+        )
         if result.get("locCode") is not None:
             self.assertGreaterEqual(result["locCode"], 1)
             self.assertIsInstance(result["locByLanguage"], list)
         self.assertIsInstance(result["hotspotFiles"], list)
-        self.assertTrue(any(item["path"].endswith("app.py") for item in result["hotspotFiles"]))
+        self.assertTrue(
+            any(item["path"].endswith("app.py") for item in result["hotspotFiles"])
+        )
         self.assertIsInstance(result["largeBlobs"], list)
-        self.assertTrue(any(item.get("source") == "HEAD" for item in result["largeBlobs"]))
+        self.assertTrue(
+            any(item.get("source") == "HEAD" for item in result["largeBlobs"])
+        )
         self.assertIsNone(result["error"])
         self.assertNotIn("fetch", calls)
 
@@ -308,19 +316,35 @@ class CompanionTests(unittest.TestCase):
         )
         self.assertEqual(len(series["commitsByDay"]), 30)
         self.assertEqual(
-            next(item["commits"] for item in series["commitsByDay"] if item["period"] == "2026-10-01"),
+            next(
+                item["commits"]
+                for item in series["commitsByDay"]
+                if item["period"] == "2026-10-01"
+            ),
             2,
         )
         self.assertEqual(
-            next(item["commits"] for item in series["commitsByMonth"] if item["period"] == "2026-09"),
+            next(
+                item["commits"]
+                for item in series["commitsByMonth"]
+                if item["period"] == "2026-09"
+            ),
             1,
         )
         self.assertEqual(
-            next(item["commits"] for item in series["commitsByYear"] if item["period"] == "2025"),
+            next(
+                item["commits"]
+                for item in series["commitsByYear"]
+                if item["period"] == "2025"
+            ),
             1,
         )
         self.assertEqual(
-            next(item["commits"] for item in series["commitsByYear"] if item["period"] == "2026"),
+            next(
+                item["commits"]
+                for item in series["commitsByYear"]
+                if item["period"] == "2026"
+            ),
             3,
         )
 
@@ -386,7 +410,9 @@ class CompanionTests(unittest.TestCase):
             port = ui.server_address[1]
             import urllib.request
 
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/index.html") as response:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/index.html"
+            ) as response:
                 self.assertEqual(response.read().decode(), "<html>ok</html>")
         finally:
             ui.shutdown()

@@ -216,16 +216,15 @@ def refresh_usage_cache(
     try:
         con = _connect(path)
         os.chmod(path, 0o600)
-    except (OSError, sqlite3.DatabaseError, ValueError) as error:
+    except (OSError, sqlite3.DatabaseError, ValueError) as cache_error:
+        error_name = type(cache_error).__name__
         _recover_corrupt(path)
         try:
             direct = _direct(items)
         except Exception as parse_error:
             direct = {"events": [], "reconciliation": [], "warnings": []}
-            error = parse_error
-        direct["warnings"].append(
-            {"code": "cache_unavailable", "detail": type(error).__name__}
-        )
+            error_name = type(parse_error).__name__
+        direct["warnings"].append({"code": "cache_unavailable", "detail": error_name})
         return {
             **direct,
             "cache": {

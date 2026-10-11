@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Mapping, MutableMapping, Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 
 # Spec: docs/superpowers/specs/2026-10-11-ai-local-history-design.md

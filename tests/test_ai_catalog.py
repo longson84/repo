@@ -18,7 +18,10 @@ catalog = load("ai_catalog", AI / "catalog.py")
 
 class CatalogTests(unittest.TestCase):
     def test_includes_first_class_sources(self):
-        ids = {item["id"] for item in catalog.resolve_sources(env={}, home=pathlib.Path("/tmp/home"))}
+        ids = {
+            item["id"]
+            for item in catalog.resolve_sources(env={}, home=pathlib.Path("/tmp/home"))
+        }
         for required in (
             "antigravity.app",
             "antigravity.ide",

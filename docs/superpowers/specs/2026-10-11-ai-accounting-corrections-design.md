@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-11
 
-**Status:** Approved design; pending implementation-plan review
+**Status:** Implemented and verified locally
 
 **Product:** Theana / Repo local dashboard
 
@@ -324,3 +324,7 @@ Each step must leave fixture tests green. The final live-data check compares cou
 
 - The user requested all findings from the 2026-10-11 review be fixed.
 - The user approved this design direction and the rule that child-agent usage belongs in token totals while child agents do not count as separate user sessions.
+
+## Verification record
+
+Implemented on `main` on 2026-10-11. The complete Python suite passed 82 tests. The UI passed the pinned Prettier check, all changed Python files passed Ruff formatting, and privacy-safe live checks confirmed Claude duplicate collapse, child execution exclusion from conversation counts, normalized surfaces, unknown-model non-pricing, Codex reconciliation reporting, and second-scan cache reuse with zero misses or reparses. The repository-wide Ruff lint command also exposed pre-existing modernization/style rules outside this feature scope; implementation-critical unused-code checks were addressed separately.

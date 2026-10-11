@@ -51,7 +51,9 @@ class SearchTests(unittest.TestCase):
         cl_id = self._write_claude(f"remember {NEEDLE} forever")
         # distractor without needle
         other = self.home / ".claude" / "projects" / "demo" / "other.jsonl"
-        other.write_text(json.dumps({"type": "user", "message": {"content": "hello"}}) + "\n")
+        other.write_text(
+            json.dumps({"type": "user", "message": {"content": "hello"}}) + "\n"
+        )
 
         result = search_mod.search_transcripts(
             NEEDLE,
@@ -84,13 +86,7 @@ class SearchTests(unittest.TestCase):
 
     def test_codex_and_cursor_agent_transcript(self):
         codex = (
-            self.home
-            / ".codex"
-            / "sessions"
-            / "2026"
-            / "01"
-            / "01"
-            / "rollout-x.jsonl"
+            self.home / ".codex" / "sessions" / "2026" / "01" / "01" / "rollout-x.jsonl"
         )
         codex.parent.mkdir(parents=True)
         codex.write_text(
