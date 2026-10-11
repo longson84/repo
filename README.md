@@ -43,15 +43,49 @@ Discovery walks up to three directory levels and skips hidden folders, dependenc
 
 The AI view distinguishes physical stores and transcript representations from logical conversations and executions. Child/subagent executions contribute token usage but do not inflate the conversation count. Token totals count unique provider/model calls: repeated streaming snapshots and copied provider message IDs are deduplicated.
 
-The Tokens report can group usage by day, week, month, or year. Its project view expands each project into provider/model rows and shows input, cached input, output, cache-write, total token volume, share, and unique-call counts. Usage without project attribution appears as `Unattributed`.
+The Tokens report can group usage by day, week, month, or year. Its project view expands each project into provider/model rows; its model view expands each provider/model into projects. Both show input, cached input, output, cache-write, total token volume, share, and unique-call counts. Usage without project attribution appears as `Unattributed`.
 
 Codex surfaces are derived from rollout metadata (`desktop`, `terminal`, `vscode`, or `exec`). Its per-call totals are reported independently from cumulative counters; any disagreement appears under reconciliation and never silently rewrites token totals.
 
 The first usage scan parses local vendor files and can take longer. Later scans reuse `.repo-local/ai/usage.db`, invalidating only files whose size, nanosecond mtime, parser version, or declared dependencies changed. The cache is rebuildable normalized metadata and counters only—it never stores prompts, responses, snippets, or tool payloads.
 
+### Project identity
+
+Reports use three levels instead of treating every folder name as a separate project:
+
+1. **Project** — the product or body of work shown in totals.
+2. **Repository** — a Git repository, identified by its credential-free normalized remote or Git common directory.
+3. **Workspace** — a checkout, clone, or worktree path that preserves where the activity occurred.
+
+Resolution is deterministic. A live Git repository is resolved first; explicit repository membership chooses its configured project, otherwise that repository becomes its own project. When no live repository can be read, an exact normalized workspace alias is tried, followed by an unambiguous case-insensitive match. An existing non-Git directory becomes a path-backed project. Missing, ambiguous, or conflicting evidence stays `Unattributed` and produces a stable warning code; folder suffixes are never guessed.
+
+Machine-local grouping rules live in `.repo-local/project-identities.json`. For example:
+
+```json
+{
+  "version": 1,
+  "projects": [
+    {
+      "id": "projectcompanyq",
+      "name": "projectCompanyQ",
+      "repositories": ["remote:github.com/longson84/projectcompanyq"],
+      "primary_workspaces": {
+        "remote:github.com/longson84/projectcompanyq": "/Users/longson/Projects/projectCompanyQ"
+      },
+      "workspace_aliases": [
+        "/Users/longson/Projects/projectCompanyQ-plan-6-google",
+        "/Users/longson/Projects/projectCompanyQ-plan-7-tasks"
+      ]
+    }
+  ]
+}
+```
+
+The companion validates this file and writes it with owner-only permissions. Changing a rule invalidates derived scan/stat caches. AI usage events keep their recorded workspace path in the rebuildable cache, so aliases are reapplied immediately without reparsing transcript content. In **Stats**, expand project → repository → workspace to inspect Git attribution. In **AI → Tokens**, expand project/model rows and open **Attribution quality** to inspect configured, path-based, and unresolved workspace evidence.
+
 ## What Scan does
 
-- Fetches the current branch’s upstream and reports ahead / behind, modified, and untracked counts.
+- Reads existing local and remote-tracking refs to report ahead / behind, modified, and untracked counts; it does not fetch.
 - Never pulls, pushes, commits, checks out, or stashes.
 - Recomputes local stats (history + current-tree LOC via `scc`; stats never fetch remotes).
 
@@ -64,6 +98,7 @@ All of this is gitignored under `.repo-local/`:
 | `settings.json` | Tracked repo paths |
 | `scan.json` | Last Scan snapshot (survives browser refresh) |
 | `stats.json` | Stats cache (reuse ~24h while `HEAD` unchanged) |
+| `project-identities.json` | Validated project/repository/workspace grouping rules (mode `0600`) |
 | `pairing-token` | Companion pairing secret |
 | `ai/detect.json` | Last AI store Detect snapshot |
 | `ai/usage.db` | Rebuildable normalized token-usage cache (no transcript text) |
