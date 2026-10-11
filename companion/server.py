@@ -43,6 +43,7 @@ from project_identity import (  # noqa: E402
     normalize_remote_url,
     prune_identity_config,
     resolve_live_repository,
+    resolve_live_worktree_root,
     save_identity_config,
 )
 from commit_stats import (  # noqa: E402
@@ -1173,7 +1174,21 @@ class State:
     def selected_repository_ids(self):
         return set(self._selected_repository_ids)
 
+    def cached_repository_ids(self):
+        repository_ids = set()
+        for payload in self.scan_cache.get("repos", {}).values():
+            if isinstance(payload, dict) and payload.get("repository_id"):
+                repository_ids.add(payload["repository_id"])
+        for project in self.stats_cache.get("projects", []):
+            if not isinstance(project, dict):
+                continue
+            for repository in project.get("repositories", []):
+                if isinstance(repository, dict) and repository.get("repository_id"):
+                    repository_ids.add(repository["repository_id"])
+        return repository_ids
+
     def reconcile_tracking(self, candidate_paths=None):
+        previous_repository_ids = self.selected_repository_ids()
         previous_fingerprint = self.identity_resolver.fingerprint()
         previous_warnings = list(self.identity_config_warnings)
         self.reload_identity_config()
@@ -1188,6 +1203,10 @@ class State:
         for value in candidates:
             try:
                 path = self._candidate_path(value)
+                worktree_root = resolve_live_worktree_root(str(path))
+                if worktree_root is None:
+                    continue
+                path = self._candidate_path(worktree_root)
                 repository_id, _ = resolve_live_repository(str(path))
             except (OSError, TypeError, ValueError):
                 continue
@@ -1200,6 +1219,11 @@ class State:
 
         selection_changed = retained_paths != self.paths
         self.paths = retained_paths
+        repository_scope_changed = bool(previous_repository_ids) and (
+            selected_repository_ids != previous_repository_ids
+        )
+        cached_repository_ids = self.cached_repository_ids()
+        cached_scope_obsolete = bool(cached_repository_ids - selected_repository_ids)
         self._selected_repository_ids = selected_repository_ids
         if selection_changed:
             self._save_selection()
@@ -1232,7 +1256,13 @@ class State:
                 saved = save_identity_config(self.identity_path, pruned)
                 self.install_identity_config(saved)
 
-        if selection_changed or identity_changed or identity_reloaded:
+        if (
+            selection_changed
+            or repository_scope_changed
+            or cached_scope_obsolete
+            or identity_changed
+            or identity_reloaded
+        ):
             self.invalidate_identity_caches()
         result = {
             "removed_paths": len(candidates) - len(retained_paths),

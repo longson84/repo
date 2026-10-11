@@ -182,6 +182,7 @@ def collect_sessions(
         if unknown:
             raise ValueError(f"Unknown source id(s): {', '.join(sorted(unknown))}")
     representations: list[dict] = []
+    live_repositories: dict[str, Optional[str]] = {}
     for source in resolved:
         if source["id"] not in WAVE1_LISTABLE:
             continue
@@ -200,12 +201,16 @@ def collect_sessions(
             cwd = representation.get("cwd")
             if not isinstance(cwd, str) or not cwd.strip():
                 continue
-            try:
-                repository_id, _ = resolve_live_repository(
-                    cwd, identity_resolver.git_runner
-                )
-            except (OSError, TypeError, ValueError):
-                continue
+            cwd_key = cwd.strip()
+            if cwd_key not in live_repositories:
+                try:
+                    repository_id, _ = resolve_live_repository(
+                        cwd_key, identity_resolver.git_runner
+                    )
+                except (OSError, TypeError, ValueError):
+                    repository_id = None
+                live_repositories[cwd_key] = repository_id
+            repository_id = live_repositories[cwd_key]
             if repository_id not in allowed_repository_ids:
                 continue
             identity = identity_resolver.resolve(cwd)

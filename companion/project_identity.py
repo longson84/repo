@@ -298,13 +298,36 @@ def _run_git(path: str, *args: str) -> str:
     return result.stdout.strip()
 
 
+def resolve_live_worktree_root(
+    workspace_path: str,
+    git_runner: Callable[..., str] = _run_git,
+) -> Optional[str]:
+    """Return the canonical worktree root, excluding Git admin and bare paths."""
+    path = Path(workspace_path)
+    if not path.is_dir():
+        return None
+    try:
+        inside_worktree = git_runner(
+            workspace_path,
+            "rev-parse",
+            "--is-inside-work-tree",
+        )
+        if inside_worktree.strip().lower() != "true":
+            return None
+        root = git_runner(workspace_path, "rev-parse", "--show-toplevel")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return canonicalize_workspace_path(root)
+
+
 def resolve_live_repository(
     workspace_path: str,
     git_runner: Callable[..., str] = _run_git,
 ) -> tuple[Optional[str], str]:
     """Resolve live Git evidence, preferring a deterministic GitHub remote."""
     path = Path(workspace_path)
-    if not path.is_dir():
+    worktree_root = resolve_live_worktree_root(workspace_path, git_runner)
+    if worktree_root is None:
         return None, path.name or "Workspace"
     try:
         common = git_runner(
@@ -316,7 +339,9 @@ def resolve_live_repository(
     except (OSError, ValueError, subprocess.SubprocessError):
         return None, path.name or "Workspace"
     common_id = canonicalize_workspace_path(common)
-    repository_name = Path(common_id).parent.name or path.name or "Repository"
+    repository_name = (
+        Path(worktree_root).name or Path(common_id).parent.name or "Repository"
+    )
     try:
         remotes = {
             item.strip()

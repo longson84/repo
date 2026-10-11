@@ -51,8 +51,8 @@ def _meta_json(db: Path) -> dict:
 
 
 def _first_user_from_store(db: Path) -> tuple[Optional[str], Optional[str]]:
-    """Return (preview, cwd) from store.db blobs."""
-    preview = cwd = None
+    """Return display text only; user messages are not workspace evidence."""
+    preview = None
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         rows = con.execute("SELECT data FROM blobs").fetchall()
@@ -83,22 +83,15 @@ def _first_user_from_store(db: Path) -> tuple[Optional[str], Optional[str]]:
             text = "\n".join(parts)
         if not text:
             continue
-        if cwd is None:
-            for marker in ("Workspace Path: ", "cwd: "):
-                if marker in text:
-                    line = text.split(marker, 1)[1].splitlines()[0].strip()
-                    if line.startswith("/"):
-                        cwd = line
-                        break
         # Prefer a short user ask, skip pure user_info blocks as title if possible
         cleaned = text
         if "<user_info>" in cleaned and "</user_info>" in cleaned:
             cleaned = cleaned.split("</user_info>", 1)[-1].strip()
         if cleaned and preview is None:
             preview = clip(cleaned)
-        if preview and cwd:
+        if preview:
             break
-    return preview, cwd
+    return preview, None
 
 
 def list_cli_sessions(chats_root: Path, source_id: str = "cursor.cli") -> list[dict]:

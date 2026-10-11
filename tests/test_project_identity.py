@@ -349,6 +349,20 @@ class ResolverTests(unittest.TestCase):
 
             self.assertTrue(repository_id.startswith("gitdir:"))
 
+    def test_git_admin_directory_and_bare_repository_are_not_workspaces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            repo = root / "repo"
+            init_repo(repo, "https://github.com/owner/repo.git")
+            bare = root / "bare.git"
+            run_git(root, "clone", "--bare", str(repo), str(bare))
+
+            admin_id, _ = resolve_live_repository(str(repo / ".git"))
+            bare_id, _ = resolve_live_repository(str(bare))
+
+            self.assertIsNone(admin_id)
+            self.assertIsNone(bare_id)
+
     def test_linked_worktrees_share_gitdir_repository_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

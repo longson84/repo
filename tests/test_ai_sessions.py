@@ -168,6 +168,47 @@ class SessionAdapterTests(unittest.TestCase):
         )
         self.assertEqual(empty["conversation_count"], 0)
 
+    def test_session_scope_resolves_each_working_directory_once(self):
+        selected = self._repo("cached-scope", "https://github.com/example/cached.git")
+        selected_id = "remote:github.com/example/cached"
+        resolver = ProjectIdentityResolver({"version": 1, "projects": []})
+        transcript_root = self.home / "transcripts"
+        transcript_root.mkdir()
+        rows = [
+            {
+                "id": str(index),
+                "source_id": "claude.code",
+                "conversation_key": f"conversation-{index}",
+                "cwd": str(selected),
+                "path": str(transcript_root / f"{index}.jsonl"),
+            }
+            for index in range(3)
+        ]
+        source = {
+            "id": "claude.code",
+            "path": str(transcript_root),
+            "surface": "cli",
+            "tool": "Claude Code",
+        }
+        with (
+            mock.patch.object(sessions_mod, "resolve_sources", return_value=[source]),
+            mock.patch.object(
+                sessions_mod, "list_sessions_for_source", return_value=rows
+            ),
+            mock.patch.object(
+                sessions_mod,
+                "resolve_live_repository",
+                return_value=(selected_id, "cached"),
+            ) as live,
+        ):
+            collected = sessions_mod.collect_sessions(
+                identity_resolver=resolver,
+                allowed_repository_ids={selected_id},
+            )
+
+        self.assertEqual(len(collected), 3)
+        live.assert_called_once()
+
     def test_antigravity_lists_from_summaries_and_transcript(self):
         base = self.home / ".gemini" / "antigravity"
         cid = "11111111-1111-1111-1111-111111111111"
@@ -446,7 +487,86 @@ class SessionAdapterTests(unittest.TestCase):
         rows = cursor.list_cli_sessions(self.home / ".cursor" / "chats")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["id"], "agent-1")
-        self.assertEqual(rows[0]["project"], "zoo")
+        self.assertIsNone(rows[0]["cwd"])
+        self.assertIsNone(rows[0]["project"])
+        self.assertIn("hello world", rows[0]["preview"])
+
+    def test_prompt_paths_do_not_supply_repository_scope(self):
+        selected = self._repo("selected", "https://github.com/example/selected.git")
+        resolver = ProjectIdentityResolver({"version": 1, "projects": []})
+        selected_id = "remote:github.com/example/selected"
+
+        antigravity_root = self.home / ".gemini" / "antigravity"
+        cid = "prompt-only"
+        (antigravity_root / "conversations").mkdir(parents=True)
+        (antigravity_root / "conversations" / f"{cid}.db").write_bytes(b"not-sqlite")
+        transcript = (
+            antigravity_root
+            / "brain"
+            / cid
+            / ".system_generated"
+            / "logs"
+            / "transcript_full.jsonl"
+        )
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(
+            json.dumps(
+                {
+                    "type": "USER_INPUT",
+                    "content": f"Please inspect this unrelated text: {selected}",
+                }
+            )
+            + "\n"
+        )
+
+        cursor_root = self.home / ".cursor" / "chats" / "hash" / "prompt-only"
+        cursor_root.mkdir(parents=True)
+        db = cursor_root / "store.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE meta (key TEXT, value TEXT)")
+        con.execute("CREATE TABLE blobs (id TEXT, data BLOB)")
+        con.execute(
+            "INSERT INTO blobs(id, data) VALUES (?, ?)",
+            (
+                "1",
+                json.dumps(
+                    {"role": "user", "content": f"cwd: {selected}\njust a prompt"}
+                ).encode(),
+            ),
+        )
+        con.commit()
+        con.close()
+
+        def sources_for(path, source_id, tool, surface):
+            return [
+                {"id": source_id, "path": str(path), "tool": tool, "surface": surface}
+            ]
+
+        with mock.patch.object(
+            sessions_mod,
+            "resolve_sources",
+            return_value=sources_for(
+                antigravity_root, "antigravity.app", "Antigravity", "app"
+            ),
+        ):
+            antigravity_rows = sessions_mod.collect_sessions(
+                identity_resolver=resolver,
+                allowed_repository_ids={selected_id},
+            )
+        with mock.patch.object(
+            sessions_mod,
+            "resolve_sources",
+            return_value=sources_for(
+                cursor_root.parents[1], "cursor.cli", "Cursor", "cli"
+            ),
+        ):
+            cursor_rows = sessions_mod.collect_sessions(
+                identity_resolver=resolver,
+                allowed_repository_ids={selected_id},
+            )
+
+        self.assertEqual(antigravity_rows, [])
+        self.assertEqual(cursor_rows, [])
 
     def test_cursor_cli_and_transcript_uuid_merge_into_one_conversation(self):
         chat_id = "cursor-shared"

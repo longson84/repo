@@ -173,6 +173,107 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual(state.paths, [])
         self.assertEqual(result["removed_paths"], 1)
 
+    def test_selection_canonicalizes_repository_subdirectory_to_worktree_root(self):
+        api = self.api()
+        repo = self.github_repo("nested-selection")
+        nested = repo / "src" / "feature"
+        nested.mkdir(parents=True)
+        state = api.State([self.root], self.root / "settings.json")
+
+        state.reconcile_tracking([str(nested)])
+
+        self.assertEqual(state.paths, [str(repo.resolve())])
+
+    def test_reconciliation_invalidates_caches_when_repository_identity_changes(self):
+        api = self.api()
+        repo = self.github_repo("renamed")
+        state = api.State([self.root], self.root / "settings.json")
+        state.reconcile_tracking([str(repo)])
+        state.stats_cache = {
+            "version": 2,
+            "repos": {
+                str(repo.resolve()): {"path": str(repo.resolve()), "stale": True}
+            },
+            "projects": [
+                {
+                    "project_id": "remote:github.com/example/renamed",
+                    "repositories": [
+                        {"repository_id": "remote:github.com/example/renamed"}
+                    ],
+                }
+            ],
+        }
+        state.scan_cache = {
+            "version": 2,
+            "scannedAt": "2026-10-11T00:00:00+00:00",
+            "repos": {
+                str(repo.resolve()): {
+                    "path": str(repo.resolve()),
+                    "repository_id": "remote:github.com/example/renamed",
+                }
+            },
+        }
+
+        self.git(
+            repo,
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/example/renamed-again.git",
+        )
+        state.reconcile_tracking()
+
+        self.assertEqual(
+            state.selected_repository_ids(),
+            {"remote:github.com/example/renamed-again"},
+        )
+        self.assertEqual(state.stats_cache, {"version": 2, "repos": {}})
+        self.assertEqual(
+            state.scan_cache, {"version": 2, "scannedAt": None, "repos": {}}
+        )
+
+    def test_startup_invalidates_cache_with_obsolete_repository_identity(self):
+        api = self.api()
+        repo = self.github_repo("current")
+        settings = self.root / "settings.json"
+        settings.write_text(json.dumps({"paths": [str(repo.resolve())]}) + "\n")
+        old_id = "remote:github.com/example/previous"
+        (self.root / "scan.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "scannedAt": "2026-10-11T00:00:00+00:00",
+                    "repos": {
+                        str(repo.resolve()): {
+                            "path": str(repo.resolve()),
+                            "repository_id": old_id,
+                        }
+                    },
+                }
+            )
+        )
+        (self.root / "stats.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "repos": {str(repo.resolve()): {"path": str(repo.resolve())}},
+                    "projects": [
+                        {
+                            "project_id": old_id,
+                            "repositories": [{"repository_id": old_id}],
+                        }
+                    ],
+                }
+            )
+        )
+
+        state = api.State([self.root], settings)
+
+        self.assertEqual(state.stats_cache, {"version": 2, "repos": {}})
+        self.assertEqual(
+            state.scan_cache, {"version": 2, "scannedAt": None, "repos": {}}
+        )
+
     def test_reconciliation_preserves_malformed_identity_document(self):
         api = self.api()
         repo = self.github_repo("valid")

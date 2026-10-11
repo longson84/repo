@@ -98,6 +98,18 @@ function applyStatus(result) {
     toast(reconciliationMessage);
   }
 }
+function invalidateTrackedScopeData() {
+  statsByPath = {};
+  statsProjects = [];
+  statsExpandedProjects.clear();
+  statsExpandedRepositories.clear();
+  aiSessions = null;
+  aiSearch = null;
+  aiUsage = null;
+  aiUsagePeriodKey = null;
+  aiUsageExpandedProjects.clear();
+  aiUsageExpandedModels.clear();
+}
 async function pairWithToken(candidate) {
   const previous = token;
   token = candidate;
@@ -2850,9 +2862,20 @@ function configuredProjectForRepository(identityConfig, repositoryId) {
   );
 }
 
-function projectManagerRows(choices, selectedRepositoryIds, identityConfig) {
+function projectManagerRows(
+  choices,
+  selectedRepositoryIds,
+  identityConfig,
+  trackingPending = false,
+) {
   const rows = [...choices.values()].sort((a, b) =>
     String(a.workspace_name || a.path).localeCompare(String(b.workspace_name || b.path)),
+  );
+  const trackedRepositoryIds = new Set(
+    rows
+      .filter((row) => row.tracked)
+      .map((row) => row.repository_id)
+      .filter(Boolean),
   );
   if (!rows.length) return '<p class="small">Discover a folder or add a path.</p>';
   return rows
@@ -2867,7 +2890,11 @@ function projectManagerRows(choices, selectedRepositoryIds, identityConfig) {
         'Unresolved';
       const repositoryName = row.repository_name || row.workspace_name || row.path;
       const groupingDisabled =
-        !identityConfig || !row.repository_id || !projectIdentityConfigEditable(identityConfig);
+        trackingPending ||
+        !identityConfig ||
+        !row.repository_id ||
+        !trackedRepositoryIds.has(row.repository_id) ||
+        !projectIdentityConfigEditable(identityConfig);
       const groupingLabel = `Select ${repositoryName} for grouping`;
       const trackingLabel = `Track ${row.workspace_name || row.path}`;
       return /* HTML */ `
@@ -2899,6 +2926,7 @@ function projectManagerRows(choices, selectedRepositoryIds, identityConfig) {
                 data-track-workspace="${esc(row.workspace_id)}"
                 aria-label="${esc(trackingLabel)}"
                 ${row.tracked ? 'checked' : ''}
+                ${trackingPending ? 'disabled' : ''}
               />
               <span>Tracked</span>
             </label>
@@ -3193,6 +3221,7 @@ async function manage() {
   let bulkAssignmentMode = 'existing';
   let lifecycleEditor = null;
   let persistTimer = 0;
+  let trackingPending = false;
   const projectSaveState = { saving: false };
   open(
     /* HTML */ `
@@ -3222,15 +3251,24 @@ async function manage() {
     'Tracking settings',
   );
   const applySelection = async () => {
+    persistTimer = 0;
     try {
       const result = await api('selection', {
         paths: [...choices.values()].filter((row) => row.tracked).map((row) => row.path),
       });
       applyStatus(result);
+      invalidateTrackedScopeData();
+      identityConfig = await api('project-identities');
       choices = projectManagerModel(paths, workspaces, discoveredWorkspaces);
-      statsByPath = Object.fromEntries(
-        Object.entries(statsByPath).filter(([path]) => paths.includes(path)),
+      const trackedRepositoryIds = new Set(
+        [...choices.values()]
+          .filter((row) => row.tracked && row.repository_id)
+          .map((row) => row.repository_id),
       );
+      for (const repositoryId of [...selectedRepositoryIds]) {
+        if (!trackedRepositoryIds.has(repositoryId)) selectedRepositoryIds.delete(repositoryId);
+      }
+      trackingPending = false;
       render();
       draw();
       const cleanup = trackingReconciliationMessage(result.reconciliation);
@@ -3238,15 +3276,24 @@ async function manage() {
         cleanup ||
         `Tracking ${paths.length} selected GitHub repositor${paths.length === 1 ? 'y' : 'ies'}.`;
     } catch (e) {
+      trackingPending = false;
+      draw();
       $('settingsError').textContent = e.message;
     }
   };
   const persist = () => {
     clearTimeout(persistTimer);
+    trackingPending = true;
+    draw();
     persistTimer = setTimeout(applySelection, 120);
   };
   const draw = () => {
-    $('choices').innerHTML = projectManagerRows(choices, selectedRepositoryIds, identityConfig);
+    $('choices').innerHTML = projectManagerRows(
+      choices,
+      selectedRepositoryIds,
+      identityConfig,
+      trackingPending,
+    );
     bindProjectManagerRows(choices, selectedRepositoryIds, persist, draw);
     if (!identityConfig) {
       $('projectManagerActions').innerHTML = '<p class="small">Loading project grouping…</p>';

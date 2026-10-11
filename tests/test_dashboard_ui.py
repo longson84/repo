@@ -259,6 +259,39 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
         )
         self.assertIn('data-track-workspace="/work/unknown"', html)
 
+    def test_project_manager_disables_grouping_for_untracked_repository(self):
+        html = self.render(
+            "projectManagerRows(new Map(["
+            "['/work/tracked',{workspace_id:'/work/tracked',workspace_name:'Tracked',"
+            "path:'/work/tracked',repository_id:'repo:tracked',repository_name:'tracked',tracked:true}],"
+            "['/work/untracked',{workspace_id:'/work/untracked',workspace_name:'Untracked',"
+            "path:'/work/untracked',repository_id:'repo:untracked',repository_name:'untracked',"
+            "tracked:false}]]),new Set(),{version:1,projects:[]})"
+        )
+
+        untracked = re.search(
+            r'<input[^>]*data-group-repository="repo:untracked"[^>]*>', html
+        )
+        tracked = re.search(
+            r'<input[^>]*data-group-repository="repo:tracked"[^>]*>', html
+        )
+        self.assertIsNotNone(untracked)
+        self.assertIsNotNone(tracked)
+        self.assertIn("disabled", untracked.group(0))
+        self.assertNotIn("disabled", tracked.group(0))
+
+    def test_project_manager_disables_controls_while_selection_saves(self):
+        html = self.render(
+            "projectManagerRows(new Map([['/work/a',{workspace_id:'/work/a',"
+            "workspace_name:'A',path:'/work/a',repository_id:'repo:a',"
+            "repository_name:'a',tracked:true}]]),new Set(),{version:1,projects:[]},true)"
+        )
+
+        grouping = re.search(r'<input[^>]*data-group-repository="repo:a"[^>]*>', html)
+        tracking = re.search(r'<input[^>]*data-track-workspace="/work/a"[^>]*>', html)
+        self.assertIn("disabled", grouping.group(0))
+        self.assertIn("disabled", tracking.group(0))
+
     def test_project_bulk_editor_options(self):
         html = self.render(
             "projectBulkEditor({version:1,projects:["
@@ -443,6 +476,37 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
         self.assertIn("Project saved; scan failed", result["message"])
         self.assertIn("Project grouping changed", result["panel"])
         self.assertIn("Aggregate", result["panel"])
+
+    def test_tracking_scope_change_clears_all_loaded_report_state(self):
+        result = self.render(
+            "(() => { paths=['/work/old']; repos=[{path:'/work/old'}]; workspaces=[{workspace_id:'/work/old'}];"
+            "statsByPath={'/work/old':{commitCount:7}}; statsProjects=[{project_id:'old'}];"
+            "aiSessions={sessions:[{id:'old'}]}; aiSearch={results:[{id:'old'}]};"
+            "aiUsage={totals:{input_tokens:9}}; aiUsagePeriodKey='2026-10';"
+            "statsExpandedProjects.add('old'); statsExpandedRepositories.add('old');"
+            "aiUsageExpandedProjects.add('old'); aiUsageExpandedModels.add('old');"
+            "invalidateTrackedScopeData(); return {statsByPath,statsProjects,aiSessions,aiSearch,"
+            "aiUsage,aiUsagePeriodKey,statsExpandedProjects:statsExpandedProjects.size,"
+            "statsExpandedRepositories:statsExpandedRepositories.size,"
+            "aiUsageExpandedProjects:aiUsageExpandedProjects.size,"
+            "aiUsageExpandedModels:aiUsageExpandedModels.size}; })()"
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "statsByPath": {},
+                "statsProjects": [],
+                "aiSessions": None,
+                "aiSearch": None,
+                "aiUsage": None,
+                "aiUsagePeriodKey": None,
+                "statsExpandedProjects": 0,
+                "statsExpandedRepositories": 0,
+                "aiUsageExpandedProjects": 0,
+                "aiUsageExpandedModels": 0,
+            },
+        )
 
     def test_successful_ai_aggregate_clears_grouping_staleness(self):
         result = self.render(

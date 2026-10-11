@@ -15,7 +15,7 @@ from ..identity import conversation_key, execution_key
 
 
 PARSER_NAME = "antigravity-sqlite-protobuf"
-PARSER_VERSION = 3
+PARSER_VERSION = 4
 
 USER_REQUEST_RE = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.S | re.I)
 
@@ -168,13 +168,10 @@ def _iso_from_sqlite(value: Optional[str]) -> Optional[str]:
 
 
 def _preview_and_cwd_from_transcript(path: Path) -> tuple[Optional[str], Optional[str]]:
+    """Read display text only; transcript content is not workspace evidence."""
     if not path.is_file():
         return None, None
     preview = None
-    cwd = None
-    path_re = re.compile(
-        r"(?:file://|`|/Users/[^/\s\"']+/(?:Projects|projects)/[^/\s\"'`]+)"
-    )
     try:
         with path.open(encoding="utf-8", errors="replace") as handle:
             for index, line in enumerate(handle):
@@ -196,24 +193,11 @@ def _preview_and_cwd_from_transcript(path: Path) -> tuple[Optional[str], Optiona
                     match = USER_REQUEST_RE.search(content)
                     text = match.group(1) if match else content
                     preview = clip(text)
-                if cwd is None and isinstance(content, str):
-                    for match in path_re.finditer(content):
-                        raw = match.group(0)
-                        if raw.startswith("file://"):
-                            raw = unquote(urlparse(raw).path)
-                        elif raw.startswith("`") and raw.endswith("`"):
-                            raw = raw[1:-1]
-                        if "/Projects/" in raw or "/projects/" in raw:
-                            # trim to project root
-                            m = re.match(r"(.*/(?:Projects|projects)/[^/]+)", raw)
-                            if m:
-                                cwd = m.group(1)
-                                break
-                if preview and cwd:
+                if preview:
                     break
     except OSError:
         return None, None
-    return preview, cwd
+    return preview, None
 
 
 def _mtime_iso(path: Path) -> Optional[str]:
