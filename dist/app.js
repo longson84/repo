@@ -1050,6 +1050,12 @@ function aiModelExpansionKey(model) {
   return `${aiUsagePeriod}:${aiUsagePeriodKey}:${aiModelId(model)}`;
 }
 
+function restoreToggleFocus(selector, datasetKey, id) {
+  [...document.querySelectorAll(selector)]
+    .find((item) => item.dataset?.[datasetKey] === id)
+    ?.focus();
+}
+
 function projectUsageRows(list, periodTotals) {
   const periodVolume = usageTokenVolume(periodTotals);
   return list
@@ -1514,6 +1520,7 @@ function paintAi() {
     $('aiUsageGroup').onchange = (event) => {
       aiUsageGroup = event.target.value;
       paintAi();
+      $('aiUsageGroup')?.focus();
     };
   }
   if ($('aiUsageProjectFilter')) {
@@ -1536,10 +1543,12 @@ function paintAi() {
   }
   document.querySelectorAll('[data-ai-project-toggle]').forEach((button) => {
     button.onclick = () => {
-      const key = aiProjectExpansionKey(button.dataset.aiProjectToggle || 'unknown');
+      const id = button.dataset.aiProjectToggle || 'unknown';
+      const key = aiProjectExpansionKey(id);
       if (aiUsageExpandedProjects.has(key)) aiUsageExpandedProjects.delete(key);
       else aiUsageExpandedProjects.add(key);
       paintAi();
+      restoreToggleFocus('[data-ai-project-toggle]', 'aiProjectToggle', id);
     };
   });
   if ($('aiUsageExpandProjects')) {
@@ -1558,14 +1567,17 @@ function paintAi() {
         else aiUsageExpandedProjects.delete(key);
       });
       paintAi();
+      $('aiUsageExpandProjects')?.focus();
     };
   }
   document.querySelectorAll('[data-ai-model-toggle]').forEach((button) => {
     button.onclick = () => {
-      const key = `${aiUsagePeriod}:${aiUsagePeriodKey}:${button.dataset.aiModelToggle}`;
+      const id = button.dataset.aiModelToggle;
+      const key = `${aiUsagePeriod}:${aiUsagePeriodKey}:${id}`;
       if (aiUsageExpandedModels.has(key)) aiUsageExpandedModels.delete(key);
       else aiUsageExpandedModels.add(key);
       paintAi();
+      restoreToggleFocus('[data-ai-model-toggle]', 'aiModelToggle', id);
     };
   });
   if ($('aiUsageExpandModels')) {
@@ -1582,13 +1594,16 @@ function paintAi() {
         else aiUsageExpandedModels.delete(key);
       });
       paintAi();
+      $('aiUsageExpandModels')?.focus();
     };
   }
   document.querySelectorAll('[data-ai-usage-period]').forEach((button) => {
     button.onclick = () => {
-      aiUsagePeriod = button.dataset.aiUsagePeriod;
+      const period = button.dataset.aiUsagePeriod;
+      aiUsagePeriod = period;
       aiUsagePeriodKey = null;
       paintAi();
+      restoreToggleFocus('[data-ai-usage-period]', 'aiUsagePeriod', period);
     };
   });
   if ($('aiUsagePrev')) {
@@ -1598,6 +1613,7 @@ function paintAi() {
       if (index >= 0 && index < series.length - 1) {
         aiUsagePeriodKey = series[index + 1].period;
         paintAi();
+        $('aiUsagePrev')?.focus();
       }
     };
   }
@@ -1608,6 +1624,7 @@ function paintAi() {
       if (index > 0) {
         aiUsagePeriodKey = series[index - 1].period;
         paintAi();
+        $('aiUsageNext')?.focus();
       }
     };
   }
@@ -2001,10 +2018,27 @@ function topReposForSeries(series, mode, limit = 5) {
     .slice(0, limit);
 }
 
+function compareStatsHierarchy(a, b) {
+  const name = (item) =>
+    String(item.project_name || item.repository_name || item.name || '').toLowerCase();
+  if (boardSortKey === 'name') return name(a).localeCompare(name(b)) * boardSortDir;
+  let av = a[boardSortKey];
+  let bv = b[boardSortKey];
+  if (boardSortKey === 'lastCommitAt') {
+    av = av ? new Date(av).getTime() : 0;
+    bv = bv ? new Date(bv).getTime() : 0;
+  }
+  av = av == null ? -1 : av;
+  bv = bv == null ? -1 : bv;
+  if (av === bv) return name(a).localeCompare(name(b));
+  return av < bv ? -boardSortDir : boardSortDir;
+}
+
 function statsHierarchyRows(projects, forceExpanded = false) {
   const numberCell = (value) =>
     value == null ? '<td class="num muted">—</td>' : `<td class="num">${esc(value)}</td>`;
-  return (projects || [])
+  return [...(projects || [])]
+    .sort(compareStatsHierarchy)
     .map((project) => {
       const projectId = project.project_id || 'unattributed';
       const projectExpanded = forceExpanded || statsExpandedProjects.has(projectId);
@@ -2015,7 +2049,8 @@ function statsHierarchyRows(projects, forceExpanded = false) {
         <td>${sparkline(project.commitsByDate || {})}</td>
       </tr>`;
       if (!projectExpanded) return projectRow;
-      const repositoryRows = (project.repositories || [])
+      const repositoryRows = [...(project.repositories || [])]
+        .sort(compareStatsHierarchy)
         .map((repository) => {
           const repositoryId = repository.repository_id || 'unattributed';
           const repositoryExpanded =
@@ -2338,9 +2373,7 @@ function bindStatsPage() {
       if (statsExpandedProjects.has(id)) statsExpandedProjects.delete(id);
       else statsExpandedProjects.add(id);
       paintStats();
-      [...document.querySelectorAll('[data-stats-project-toggle]')]
-        .find((item) => item.dataset.statsProjectToggle === id)
-        ?.focus();
+      restoreToggleFocus('[data-stats-project-toggle]', 'statsProjectToggle', id);
     };
   });
   document.querySelectorAll('[data-stats-repository-toggle]').forEach((button) => {
@@ -2349,28 +2382,30 @@ function bindStatsPage() {
       if (statsExpandedRepositories.has(id)) statsExpandedRepositories.delete(id);
       else statsExpandedRepositories.add(id);
       paintStats();
-      [...document.querySelectorAll('[data-stats-repository-toggle]')]
-        .find((item) => item.dataset.statsRepositoryToggle === id)
-        ?.focus();
+      restoreToggleFocus('[data-stats-repository-toggle]', 'statsRepositoryToggle', id);
     };
   });
   document.querySelectorAll('[data-stats-period]').forEach((button) => {
     button.onclick = () => {
-      statsPeriod = button.dataset.statsPeriod;
+      const period = button.dataset.statsPeriod;
+      statsPeriod = period;
       statsCursor = null;
       paintStats();
+      restoreToggleFocus('[data-stats-period]', 'statsPeriod', period);
     };
   });
   if ($('statsPrev')) {
     $('statsPrev').onclick = () => {
       shiftStatsCursor(-1);
       paintStats();
+      $('statsPrev')?.focus();
     };
   }
   if ($('statsNext')) {
     $('statsNext').onclick = () => {
       shiftStatsCursor(1);
       paintStats();
+      $('statsNext')?.focus();
     };
   }
   document.querySelectorAll('[data-board-sort]').forEach((th) => {
@@ -2382,6 +2417,7 @@ function bindStatsPage() {
         boardSortDir = key === 'name' ? 1 : -1;
       }
       paintStats();
+      restoreToggleFocus('[data-board-sort]', 'boardSort', key);
     };
   });
   const openRow = (node) => {

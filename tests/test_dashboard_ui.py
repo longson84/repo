@@ -86,6 +86,23 @@ process.stdout.write(JSON.stringify(output));
         self.assertIn("/old/worktree", html)
         self.assertIn("workspace_missing", html)
 
+    def test_repository_hierarchy_honors_the_active_sort(self):
+        html = self.render(
+            "(boardSortKey='name',boardSortDir=1,statsHierarchyRows(["
+            "{project_id:'z',project_name:'Zulu',commitCount:1,commits7d:0,commits30d:0,repositories:[]},"
+            "{project_id:'a',project_name:'Alpha',commitCount:1,commits7d:0,commits30d:0,repositories:[]}]))"
+        )
+        self.assertLess(html.index("Alpha"), html.index("Zulu"))
+
+    def test_toggle_focus_is_restored_after_rerender(self):
+        focused = self.render(
+            "(() => { let focused=false; document.querySelectorAll=() => ["
+            "{dataset:{aiModelToggle:'provider::model'},focus(){focused=true}}];"
+            "restoreToggleFocus('[data-ai-model-toggle]','aiModelToggle','provider::model');"
+            "return focused; })()"
+        )
+        self.assertTrue(focused)
+
 
 if __name__ == "__main__":
     unittest.main()
