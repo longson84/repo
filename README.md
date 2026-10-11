@@ -133,7 +133,7 @@ All of this is gitignored under `.repo-local/`:
 
 **Disconnect** in the UI forgets the browser token. Restarting the companion reuses the same token unless you pass `--new-token`.
 
-Each computer has its own `.repo-local/`. There is no cross-machine sharing yet — run the app separately on each machine.
+Each computer runs independently with its own `.repo-local/`, tracked selection, scans, and reports.
 
 ## Tests
 

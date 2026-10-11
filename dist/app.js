@@ -483,19 +483,16 @@ function next(r) {
   return r.fresh ? 'Up to date' : 'Not fetched';
 }
 function render() {
-  const other = $('machine').value === 'other';
-  const list = other
-    ? []
-    : repos
-        .filter(
-          (r) =>
-            r.name.toLowerCase().includes($('search').value.toLowerCase()) &&
-            (filter === 'all' ||
-              (filter === 'behind' && r.behind > 0) ||
-              (filter === 'ahead' && r.ahead > 0) ||
-              (filter === 'dirty' && r.modified + r.untracked > 0)),
-        )
-        .sort(compareSort);
+  const list = repos
+    .filter(
+      (r) =>
+        r.name.toLowerCase().includes($('search').value.toLowerCase()) &&
+        (filter === 'all' ||
+          (filter === 'behind' && r.behind > 0) ||
+          (filter === 'ahead' && r.ahead > 0) ||
+          (filter === 'dirty' && r.modified + r.untracked > 0)),
+    )
+    .sort(compareSort);
   paintSortHeaders();
   $('rows').innerHTML = list
     .map((r) => {
@@ -539,28 +536,25 @@ function render() {
     })
     .join('');
   $('empty').hidden = !!list.length;
-  $('empty').textContent = other
-    ? 'No report from a second machine. Open this dashboard on that computer and pair its companion.'
-    : !paired
-      ? 'Connect the local companion to begin.'
-      : !scannedAt
-        ? 'Select a repository with a github.com remote under Manage tracked repos, then scan this machine.'
-        : 'No repositories match this view.';
-  $('repoCount').textContent = other ? 'Unknown' : list.length;
+  $('empty').textContent = !paired
+    ? 'Connect the local companion to begin.'
+    : !scannedAt
+      ? 'Select a repository with a github.com remote under Manage tracked repos, then scan this machine.'
+      : 'No repositories match this view.';
+  $('repoCount').textContent = list.length;
   ['total', 'behindStat', 'aheadStat', 'dirtyStat'].forEach(
     (id, i) =>
-      ($(id).textContent =
-        other || !scannedAt
-          ? '—'
-          : [
-              repos.length,
-              repos.filter((r) => r.behind > 0).length,
-              repos.filter((r) => r.ahead > 0).length,
-              repos.filter((r) => r.modified + r.untracked > 0).length,
-            ][i]),
+      ($(id).textContent = !scannedAt
+        ? '—'
+        : [
+            repos.length,
+            repos.filter((r) => r.behind > 0).length,
+            repos.filter((r) => r.ahead > 0).length,
+            repos.filter((r) => r.modified + r.untracked > 0).length,
+          ][i]),
   );
   const pulse = portfolioNumbers();
-  const showPortfolio = paired && !other && paths.length;
+  const showPortfolio = paired && paths.length;
   $('portfolioStats').hidden = !showPortfolio;
   if (showPortfolio) {
     const hasCache = pulse.cached > 0;
@@ -576,21 +570,17 @@ function render() {
           ? 'Scanning…'
           : 'Run Scan to fill stats';
   }
-  $('machineTitle').innerHTML = other
-    ? 'Second machine <span>NOT SCANNED</span>'
-    : esc(machineName) + ` <span>${paired ? 'CONNECTED' : 'NOT CONNECTED'}</span>`;
-  $('machineMeta').textContent = other
-    ? 'No report received'
-    : paired
-      ? `${paths.length} selected GitHub repos · ${scannedAt ? 'Scanned ' + new Date(scannedAt).toLocaleString() : 'Not scanned yet'}`
-      : 'Run companion with --ui, or connect with a pairing token.';
-  $('snapshotLabel').textContent =
-    scannedAt && !other
-      ? 'Compared with each branch’s upstream · ' + new Date(scannedAt).toLocaleString()
-      : 'No live scan yet';
-  $('currentInsights').hidden = other || !scannedAt;
-  $('scan').disabled = other || !paired || busy || statsBusy || !paths.length;
-  $('manage').disabled = other || !paired || busy || statsBusy;
+  $('machineTitle').innerHTML =
+    esc(machineName) + ` <span>${paired ? 'CONNECTED' : 'NOT CONNECTED'}</span>`;
+  $('machineMeta').textContent = paired
+    ? `${paths.length} selected GitHub repos · ${scannedAt ? 'Scanned ' + new Date(scannedAt).toLocaleString() : 'Not scanned yet'}`
+    : 'Run companion with --ui, or connect with a pairing token.';
+  $('snapshotLabel').textContent = scannedAt
+    ? 'Compared with each branch’s upstream · ' + new Date(scannedAt).toLocaleString()
+    : 'No live scan yet';
+  $('currentInsights').hidden = !scannedAt;
+  $('scan').disabled = !paired || busy || statsBusy || !paths.length;
+  $('manage').disabled = !paired || busy || statsBusy;
   $('connect').textContent = paired ? 'Connection settings' : 'Connect companion';
   if ($('disconnect')) $('disconnect').hidden = !paired;
   $('scan').innerHTML = busy || statsBusy ? 'Scanning…' : '<span class="arrow">⟳</span> Scan';
@@ -600,10 +590,10 @@ function render() {
   $('nextText').textContent =
     'Review the eligible branches and the reasons other repositories need attention. This version previews updates; it does not pull or push.';
   const route = parseRoute();
-  const onDetail = route.view === 'repo' && !other;
-  const onStats = route.view === 'stats' && !other;
-  const onLanguages = route.view === 'languages' && !other;
-  const onAi = route.view === 'ai' && !other;
+  const onDetail = route.view === 'repo';
+  const onStats = route.view === 'stats';
+  const onLanguages = route.view === 'languages';
+  const onAi = route.view === 'ai';
   $('overviewView').hidden = onDetail || onStats || onLanguages || onAi;
   $('detailView').hidden = !onDetail;
   $('statsView').hidden = !onStats;
@@ -3609,7 +3599,6 @@ document.addEventListener('keydown', (e) => {
   }
 });
 $('search').oninput = render;
-$('machine').onchange = render;
 document.querySelectorAll('#repoHead th.sortable').forEach((th) => {
   th.onclick = () => {
     const key = th.dataset.sort;
@@ -3632,7 +3621,6 @@ document.querySelectorAll('[data-filter]').forEach(
     }),
 );
 $('overviewNav').onclick = () => {
-  $('machine').value = 'current';
   if (parseRoute().view !== 'overview') location.hash = '#/';
   else render();
 };
@@ -3642,19 +3630,6 @@ $('aiNav').onclick = () => openAi();
 window.addEventListener('hashchange', () => {
   syncRoute();
 });
-$('machinesNav').onclick = () =>
-  open(
-    /* HTML */ `
-      <h3 id="dialogTitle">Your machines</h3>
-      <p>${esc(machineName)}: ${paired ? 'connected' : 'not connected'}</p>
-      <p class="note">
-        On your second computer, clone this project, start its companion, and pair this dashboard
-        there. Selections are saved separately on each machine. Cross-machine report sharing is not
-        enabled yet.
-      </p>
-    `,
-    'Machines',
-  );
 $('activityNav').onclick = () =>
   open(
     /* HTML */ `

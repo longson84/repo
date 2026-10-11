@@ -54,6 +54,22 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
             self.fail(error.stderr)
         return json.loads(completed.stdout)
 
+    def test_dashboard_has_no_cross_machine_placeholder_ui(self):
+        markup = (ROOT / "dist" / "index.html").read_text()
+        script = (ROOT / "dist" / "app.js").read_text()
+
+        for removed in (
+            'id="machinesNav"',
+            'id="machine"',
+            "Second machine",
+            "across machines",
+            "shared between machines",
+        ):
+            self.assertNotIn(removed, markup)
+        self.assertNotIn("$('machinesNav')", script)
+        self.assertNotIn("$('machine')", script)
+        self.assertNotIn("const other =", script)
+
     def test_model_rows_render_stable_model_toggle_and_nested_project(self):
         html = self.render(
             "modelUsageRows([{provider:'openai',model:'gpt-test',input_tokens:10,"
