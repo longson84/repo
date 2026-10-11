@@ -1393,6 +1393,7 @@ class State:
                 compound_sessions=compound_sessions,
                 cache_path=self.ai_usage_cache_path,
                 identity_resolver=self.identity_resolver,
+                allowed_repository_ids=self.selected_repository_ids(),
             )
 
     def run_ai_search(self, data):
@@ -1841,10 +1842,10 @@ class Handler(BaseHTTPRequestHandler):
                 cached = state.ai_detect_cache
                 if not cached:
                     response = {
-                        "version": 1,
+                        "version": 3,
                         "detectedAt": None,
                         "sources": [],
-                        "summary": {"total": 0, "found": 0, "sessions": 0},
+                        "summary": {"total": 0, "stores_found": 0, "found": 0},
                     }
                 else:
                     response = cached

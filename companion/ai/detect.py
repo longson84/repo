@@ -1,4 +1,4 @@
-"""Detect AI discussion stores: existence, size, session estimates."""
+"""Detect AI discussion store availability without global activity counts."""
 
 from __future__ import annotations
 
@@ -285,30 +285,7 @@ def detect_one(source: dict) -> dict:
     path = Path(source["path"])
     exists = path.exists()
     size = directory_size(path) if exists else 0
-    estimate = None
-    extra = ""
-    if exists:
-        estimate, extra = estimate_sessions(source["id"], path)
-    inventory = (
-        _inventory(source["id"], path)
-        if exists
-        else {
-            "representations": 0,
-            "conversations": set(),
-            "executions": set(),
-        }
-    )
-    conversation_estimate = (
-        len(inventory["conversations"])
-        if inventory["conversations"] is not None
-        else None
-    )
-    execution_estimate = (
-        len(inventory["executions"]) if inventory["executions"] is not None else None
-    )
     notes = source.get("notes") or ""
-    if extra:
-        notes = f"{notes}; {extra}" if notes else extra
     return {
         "id": source["id"],
         "tool": source["tool"],
@@ -325,11 +302,7 @@ def detect_one(source: dict) -> dict:
             else "missing"
         ),
         "size_bytes": size,
-        "session_estimate": conversation_estimate,
-        "conversation_estimate": conversation_estimate,
-        "execution_estimate": execution_estimate,
-        "representation_estimate": inventory["representations"],
-        "details": {"raw_note": extra},
+        "details": {},
         "notes": notes,
         "supports": {
             "sessions": source["id"]
@@ -377,36 +350,15 @@ def detect_one(source: dict) -> dict:
 def detect_all(sources: list[dict]) -> dict:
     detected_at = datetime.now(timezone.utc).isoformat()
     results = [detect_one(source) for source in sources]
-    conversation_keys = set()
-    execution_keys = set()
-    for source, result in zip(sources, results):
-        if not result["exists"]:
-            continue
-        inventory = _inventory(source["id"], Path(source["path"]))
-        if inventory["conversations"] is not None:
-            conversation_keys.update(inventory["conversations"])
-        if inventory["executions"] is not None:
-            execution_keys.update(inventory["executions"])
     stores_found = sum(1 for item in results if item["exists"])
-    representation_estimate = sum(
-        int(item.get("representation_estimate") or 0)
-        for item in results
-        if item["exists"]
-    )
-    conversation_estimate = len(conversation_keys)
-    execution_estimate = len(execution_keys)
     return {
-        "version": 2,
+        "version": 3,
         "detectedAt": detected_at,
         "sources": results,
         "summary": {
             "total": len(results),
             "stores_found": stores_found,
-            "representation_estimate": representation_estimate,
-            "conversation_estimate": conversation_estimate,
-            "execution_estimate": execution_estimate,
             "found": stores_found,
-            "sessions": conversation_estimate,
         },
     }
 
@@ -420,7 +372,7 @@ def load_detect_cache(path: Path) -> Optional[dict]:
         return None
     if (
         not isinstance(raw, dict)
-        or raw.get("version") != 2
+        or raw.get("version") != 3
         or not isinstance(raw.get("sources"), list)
     ):
         return None

@@ -101,6 +101,13 @@ class AiApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertGreaterEqual(data["summary"]["total"], 10)
         self.assertTrue(any(s["id"] == "claude.code" for s in data["sources"]))
+        self.assertEqual(data["version"], 3)
+        self.assertEqual(set(data["summary"]), {"total", "stores_found", "found"})
+        for source in data["sources"]:
+            self.assertNotIn("session_estimate", source)
+            self.assertNotIn("conversation_estimate", source)
+            self.assertNotIn("execution_estimate", source)
+            self.assertNotIn("representation_estimate", source)
         status, cached = self.request("GET", "/api/ai/detect")
         self.assertEqual(status, 200)
         self.assertEqual(cached["detectedAt"], data["detectedAt"])
@@ -398,6 +405,8 @@ class AiApiTests(unittest.TestCase):
         self.assertNotIn("pricing_coverage", usage)
         self.assertNotIn("prices", usage)
         self.assertEqual(usage["version"], 2)
+        self.assertEqual(usage["scope"]["kind"], "selected_github_repositories")
+        self.assertEqual(usage["scope"]["repository_count"], 0)
         self.assertIn("by_repository", usage)
         self.assertIn("by_workspace", usage)
 
@@ -456,6 +465,7 @@ class AiApiTests(unittest.TestCase):
         self.assertIn("status", usage["cache"])
 
     def test_usage_api_accepts_conversation_keys_and_compound_sessions(self):
+        workspace, _ = self.select_github_workspace("selector-scope")
         claude_root = self.root / "claude-home"
         transcript = claude_root / "projects" / "demo" / "session-1.jsonl"
         transcript.parent.mkdir(parents=True)
@@ -464,6 +474,7 @@ class AiApiTests(unittest.TestCase):
                 {
                     "type": "assistant",
                     "sessionId": "session-1",
+                    "cwd": str(workspace),
                     "timestamp": "2026-03-01T12:00:00Z",
                     "message": {
                         "id": "msg-1",
@@ -480,6 +491,7 @@ class AiApiTests(unittest.TestCase):
                 {
                     "type": "assistant",
                     "sessionId": "session-2",
+                    "cwd": str(workspace),
                     "timestamp": "2026-03-01T12:01:00Z",
                     "message": {
                         "id": "msg-2",

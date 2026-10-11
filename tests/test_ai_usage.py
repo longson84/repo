@@ -1,6 +1,7 @@
 import json
 import pathlib
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -491,7 +492,7 @@ class ClaudeCodexUsageTests(unittest.TestCase):
 
 
 class AggregateUsageTests(unittest.TestCase):
-    def aggregate_events(self, events, resolver):
+    def aggregate_events(self, events, resolver, allowed_repository_ids=None):
         source = {"id": "codex.home", "path": "/synthetic", "surface": "unknown"}
         with (
             mock.patch.object(usage_mod, "resolve_sources", return_value=[source]),
@@ -502,10 +503,145 @@ class AggregateUsageTests(unittest.TestCase):
             ),
         ):
             return usage_mod.aggregate_usage(
-                sources=["codex.home"], identity_resolver=resolver
+                sources=["codex.home"],
+                identity_resolver=resolver,
+                allowed_repository_ids=allowed_repository_ids,
             )
 
-    def test_canonical_aliases_merge_case_and_historical_worktrees_without_suffix_guessing(self):
+    def test_selected_repository_scope_filters_every_aggregate_dimension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+
+            def init_repo(name, remote=None):
+                path = root / name
+                path.mkdir()
+                subprocess.run(
+                    ["git", "-C", str(path), "init", "-b", "main"],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                subprocess.run(
+                    ["git", "-C", str(path), "config", "user.email", "x@y.test"],
+                    check=True,
+                )
+                subprocess.run(
+                    ["git", "-C", str(path), "config", "user.name", "Test"],
+                    check=True,
+                )
+                (path / "README.md").write_text("test\n")
+                subprocess.run(["git", "-C", str(path), "add", "."], check=True)
+                subprocess.run(
+                    ["git", "-C", str(path), "commit", "-m", "initial"],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                )
+                if remote:
+                    subprocess.run(
+                        ["git", "-C", str(path), "remote", "add", "origin", remote],
+                        check=True,
+                    )
+                return path
+
+            selected = init_repo("selected", "https://github.com/example/selected.git")
+            linked = root / "selected-linked"
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(selected),
+                    "worktree",
+                    "add",
+                    "-b",
+                    "linked",
+                    str(linked),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            unselected = init_repo(
+                "unselected", "https://github.com/example/unselected.git"
+            )
+            gitlab = init_repo("gitlab", "https://gitlab.com/example/gitlab.git")
+            local = init_repo("local")
+            ordinary = root / "ordinary"
+            ordinary.mkdir()
+            missing = root / "missing"
+            paths = [
+                str(selected),
+                str(linked),
+                str(unselected),
+                str(gitlab),
+                str(local),
+                str(ordinary),
+                str(missing),
+                None,
+            ]
+            base = {
+                "source_id": "codex.home",
+                "tool": "codex",
+                "surface": "terminal",
+                "provider": "openai",
+                "model": "gpt-test",
+                "date": "2026-10-11",
+                "input_tokens": 10,
+                "cached_tokens": 2,
+                "output_tokens": 3,
+                "cache_write_tokens": 1,
+            }
+            events = [
+                {
+                    **base,
+                    "event_key": f"event-{index}",
+                    "conversation_key": f"conversation-{index}",
+                    "execution_key": f"execution-{index}",
+                    "cwd": cwd,
+                }
+                for index, cwd in enumerate(paths)
+            ]
+            selected_id = "remote:github.com/example/selected"
+            resolver = ProjectIdentityResolver({"version": 1, "projects": []})
+
+            result = self.aggregate_events(events, resolver, {selected_id})
+            empty = self.aggregate_events(events, resolver, set())
+
+            self.assertEqual(result["totals"]["events"], 2)
+            self.assertEqual(result["totals"]["input_tokens"], 20)
+            self.assertEqual(result["conversation_count"], 2)
+            self.assertEqual(result["execution_count"], 2)
+            self.assertEqual(result["event_count"], 2)
+            for dimension in (
+                "by_model",
+                "by_project",
+                "by_repository",
+                "by_workspace",
+                "by_surface",
+                "by_tool",
+                "by_source",
+            ):
+                self.assertEqual(sum(row["events"] for row in result[dimension]), 2)
+            self.assertEqual(
+                result["scope"],
+                {
+                    "kind": "selected_github_repositories",
+                    "repository_count": 1,
+                    "excluded_event_count": 6,
+                    "excluded_tokens": {
+                        "input_tokens": 60,
+                        "cached_tokens": 12,
+                        "output_tokens": 18,
+                        "cache_write_tokens": 6,
+                        "events": 6,
+                    },
+                },
+            )
+            self.assertEqual(empty["totals"], usage_mod._empty_bucket())
+            self.assertEqual(empty["event_count"], 0)
+            self.assertEqual(empty["scope"]["excluded_event_count"], 8)
+
+    def test_canonical_aliases_merge_case_and_historical_worktrees_without_suffix_guessing(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             eravn = root / "eravnTrans"
@@ -742,6 +878,7 @@ class AggregateUsageTests(unittest.TestCase):
         self.assertEqual(result["event_count"], 2)
         self.assertEqual(result["totals"]["output_tokens"], 4)
         self.assertEqual(resolver.calls, ["/workspace/one"])
+
     def test_aggregate_reuses_incremental_cache_on_second_scan(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = pathlib.Path(tmp)

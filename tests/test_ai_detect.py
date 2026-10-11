@@ -39,7 +39,7 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(result["size_bytes"], 0)
         self.assertEqual(result["kind"], "missing")
 
-    def test_antigravity_fixture_counts_sessions(self):
+    def test_antigravity_fixture_reports_availability_without_activity_counts(self):
         base = self.home / ".gemini" / "antigravity"
         brain = base / "brain" / "abc-123"
         brain.mkdir(parents=True)
@@ -61,9 +61,15 @@ class DetectTests(unittest.TestCase):
         }
         result = detect.detect_one(source)
         self.assertTrue(result["exists"])
-        self.assertEqual(result["session_estimate"], 1)
         self.assertGreater(result["size_bytes"], 0)
-        self.assertIn("transcript_full=1", result["notes"])
+        for key in (
+            "session_estimate",
+            "conversation_estimate",
+            "execution_estimate",
+            "representation_estimate",
+            "sessions",
+        ):
+            self.assertNotIn(key, result)
 
     def test_detect_all_and_cache_roundtrip(self):
         base = self.home / ".claude" / "projects" / "-tmp"
@@ -71,17 +77,19 @@ class DetectTests(unittest.TestCase):
         (base / "sess.jsonl").write_text("{}\n")
         sources = catalog.resolve_sources(env={}, home=self.home)
         payload = detect.detect_all(sources)
-        self.assertEqual(payload["version"], 2)
+        self.assertEqual(payload["version"], 3)
         self.assertIn("detectedAt", payload)
         found = [s for s in payload["sources"] if s["id"] == "claude.code"][0]
         self.assertTrue(found["exists"])
-        self.assertEqual(found["session_estimate"], 1)
+        self.assertEqual(
+            found["notes"], "Claude Code CLI; sessions under projects/**/*.jsonl"
+        )
         cache_path = self.home / "ai-detect.json"
         detect.save_detect_cache(cache_path, payload)
         loaded = detect.load_detect_cache(cache_path)
         self.assertEqual(loaded["summary"]["found"], payload["summary"]["found"])
 
-    def test_detect_separates_stores_representations_conversations_and_executions(self):
+    def test_detect_all_summary_contains_only_store_availability(self):
         root = self.home / ".claude"
         project = root / "projects" / "demo"
         child = project / "session-1" / "subagents"
@@ -100,14 +108,19 @@ class DetectTests(unittest.TestCase):
         payload = detect.detect_all([source])
 
         detail = payload["sources"][0]
-        self.assertEqual(detail["representation_estimate"], 3)
-        self.assertEqual(detail["conversation_estimate"], 1)
-        self.assertEqual(detail["execution_estimate"], 3)
+        self.assertEqual(set(payload["summary"]), {"total", "stores_found", "found"})
         self.assertEqual(payload["summary"]["stores_found"], 1)
-        self.assertEqual(payload["summary"]["conversation_estimate"], 1)
-        self.assertEqual(payload["summary"]["execution_estimate"], 3)
+        for key in (
+            "session_estimate",
+            "conversation_estimate",
+            "execution_estimate",
+            "representation_estimate",
+            "sessions",
+        ):
+            self.assertNotIn(key, detail)
+            self.assertNotIn(key, payload["summary"])
 
-    def test_cursor_ide_database_presence_is_not_one_session(self):
+    def test_cursor_ide_database_reports_store_availability(self):
         root = self.home / "Cursor"
         state = root / "User" / "globalStorage" / "state.vscdb"
         state.parent.mkdir(parents=True)
@@ -121,11 +134,10 @@ class DetectTests(unittest.TestCase):
                 "notes": "",
             }
         )
-        self.assertEqual(result["representation_estimate"], 1)
-        self.assertIsNone(result["conversation_estimate"])
-        self.assertIsNone(result["session_estimate"])
+        self.assertTrue(result["exists"])
+        self.assertEqual(result["kind"], "dir")
 
-    def test_detect_does_not_sum_overlapping_cursor_representations(self):
+    def test_detect_counts_overlapping_cursor_stores_not_activity(self):
         cli = self.home / "cli"
         db = cli / "workspace" / "shared-id" / "store.db"
         db.parent.mkdir(parents=True)
@@ -161,13 +173,12 @@ class DetectTests(unittest.TestCase):
                 },
             ]
         )
-        self.assertEqual(payload["summary"]["representation_estimate"], 2)
-        self.assertEqual(payload["summary"]["conversation_estimate"], 1)
-        self.assertEqual(payload["summary"]["execution_estimate"], 1)
+        self.assertEqual(payload["summary"]["stores_found"], 2)
+        self.assertEqual(payload["summary"]["found"], 2)
 
     def test_old_detect_cache_is_ignored(self):
         path = self.home / "detect.json"
-        path.write_text('{"version":1,"sources":[]}')
+        path.write_text('{"version":2,"sources":[]}')
         self.assertIsNone(detect.load_detect_cache(path))
 
 

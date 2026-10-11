@@ -10,6 +10,7 @@ from .adapters import antigravity, claude_code, codex
 from .catalog import resolve_sources
 from .sessions import collect_sessions, resolve_conversation_selectors
 from .usage_cache import refresh_usage_cache
+from project_identity import resolve_live_repository
 
 WAVE1_USAGE_SUPPORTED = {
     "antigravity.app",
@@ -168,9 +169,7 @@ def _serialize_periods(store: dict[str, dict[str, Any]]) -> list[dict[str, Any]]
         repositories = _sorted_usage(
             bucket.get("_repositories") or {}, "repository_name"
         )
-        workspaces = _sorted_usage(
-            bucket.get("_workspaces") or {}, "workspace_name"
-        )
+        workspaces = _sorted_usage(bucket.get("_workspaces") or {}, "workspace_name")
         rows.append(
             {
                 "period": period,
@@ -229,6 +228,7 @@ def aggregate_usage(
     home: Optional[Path] = None,
     cache_path: Optional[Path] = None,
     identity_resolver: Optional[Any] = None,
+    allowed_repository_ids: Optional[set[str]] = None,
 ) -> dict:
     """Aggregate usage by date / model / surface / tool and period grains."""
     resolved = resolve_sources(env=env, home=home)
@@ -258,7 +258,13 @@ def aggregate_usage(
 
     canonical_filter = None
     if conversation_keys or compound_sessions or session_ids:
-        inventory = collect_sessions(sources=sources, env=env, home=home)
+        inventory = collect_sessions(
+            sources=sources,
+            env=env,
+            home=home,
+            identity_resolver=identity_resolver,
+            allowed_repository_ids=allowed_repository_ids,
+        )
         canonical_filter = resolve_conversation_selectors(
             inventory,
             conversation_keys=conversation_keys,
@@ -385,11 +391,41 @@ def aggregate_usage(
             if identity is None:
                 try:
                     identity = identity_resolver.resolve(cwd_key)
+                    if allowed_repository_ids is not None:
+                        live_repository_id, _ = resolve_live_repository(
+                            cwd_key, identity_resolver.git_runner
+                        )
+                        if identity.get("repository_id") != live_repository_id:
+                            identity = _unattributed_identity("workspace_unavailable")
                 except (OSError, TypeError, ValueError):
                     identity = _unattributed_identity("identity_resolution_failed")
                 resolved_cwds[cwd_key] = identity
         event.update(identity)
         event["project"] = identity["project_name"]
+
+    excluded_tokens = _empty_bucket()
+    if allowed_repository_ids is not None:
+        included_events = {}
+        for event_key, event in unique_events.items():
+            if event.get("repository_id") in allowed_repository_ids:
+                included_events[event_key] = event
+            else:
+                _add(excluded_tokens, event)
+        unique_events = included_events
+
+    included_conversation_keys = {
+        event.get("conversation_key")
+        for event in unique_events.values()
+        if event.get("conversation_key")
+    }
+    reconciliation = [
+        row
+        for row in reconciliation
+        if row.get("conversation_key") in included_conversation_keys
+    ]
+
+    for event in unique_events.values():
+        identity = event
         confidence = str(identity.get("identity_confidence") or "unattributed")
         if confidence not in attribution:
             confidence = "unattributed"
@@ -544,8 +580,7 @@ def aggregate_usage(
                 {
                     **_empty_bucket(),
                     "repository_id": repository_key,
-                    "repository_name": event.get("repository_name")
-                    or "Unattributed",
+                    "repository_name": event.get("repository_name") or "Unattributed",
                 },
             )
             _add(period_repository, event)
@@ -559,8 +594,7 @@ def aggregate_usage(
                     "project_id": project_key,
                     "project_name": event.get("project_name") or "Unattributed",
                     "repository_id": repository_key,
-                    "repository_name": event.get("repository_name")
-                    or "Unattributed",
+                    "repository_name": event.get("repository_name") or "Unattributed",
                     "identity_confidence": event.get("identity_confidence")
                     or "unattributed",
                 },
@@ -605,6 +639,26 @@ def aggregate_usage(
         },
         "reconciliation": reconciliation,
         "cache": cache_metadata,
+        "scope": {
+            "kind": (
+                "selected_github_repositories"
+                if allowed_repository_ids is not None
+                else "all_local_activity"
+            ),
+            "repository_count": (
+                len(allowed_repository_ids)
+                if allowed_repository_ids is not None
+                else len(
+                    {
+                        event.get("repository_id")
+                        for event in unique_events.values()
+                        if event.get("repository_id")
+                    }
+                )
+            ),
+            "excluded_event_count": excluded_tokens["events"],
+            "excluded_tokens": excluded_tokens,
+        },
         "totals": totals,
         "conversation_count": conversation_count,
         "execution_count": execution_count,
