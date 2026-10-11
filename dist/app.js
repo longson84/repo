@@ -669,6 +669,8 @@ let aiUsagePeriod = 'month'; // day | week | month | year
 let aiUsagePeriodKey = null; // selected period key within aiUsagePeriod
 let aiUsageProjectFilter = '';
 let aiUsageModelFilter = '';
+let aiUsageSortKey = null;
+let aiUsageSortDir = 1;
 const aiUsageExpandedProjects = new Set();
 const aiUsageExpandedModels = new Set();
 let aiSearchFilter = {
@@ -1021,8 +1023,43 @@ function usageTotalRow(totals) {
   </tr>`;
 }
 
+function setAiUsageSort(key) {
+  if (aiUsageSortKey === key) aiUsageSortDir = -aiUsageSortDir;
+  else {
+    aiUsageSortKey = key;
+    aiUsageSortDir = key === 'label' ? 1 : -1;
+  }
+}
+
+function sortAiUsageRows(list, labelFn) {
+  const rows = [...(list || [])];
+  if (!aiUsageSortKey) return rows;
+  const numericValue = (item) => {
+    if (aiUsageSortKey === 'total' || aiUsageSortKey === 'share') {
+      return usageTokenVolume(item);
+    }
+    return Number(item?.[aiUsageSortKey] || 0);
+  };
+  return rows.sort((a, b) => {
+    const aLabel = String(labelFn(a) || '');
+    const bLabel = String(labelFn(b) || '');
+    if (aiUsageSortKey === 'label') {
+      return aLabel.localeCompare(bLabel) * aiUsageSortDir;
+    }
+    const difference = numericValue(a) - numericValue(b);
+    return difference ? difference * aiUsageSortDir : aLabel.localeCompare(bLabel);
+  });
+}
+
+function aiUsageHeaderCell(label, key) {
+  const active = aiUsageSortKey === key;
+  const direction = active ? (aiUsageSortDir > 0 ? 'ascending' : 'descending') : 'none';
+  const arrow = active ? (aiUsageSortDir > 0 ? '↑' : '↓') : '';
+  return `<th aria-sort="${direction}"><button type="button" class="ai-sort-button" data-ai-usage-sort="${esc(key)}">${esc(label)} <span aria-hidden="true">${arrow}</span></button></th>`;
+}
+
 function usageDataRows(list, labelFn, denominator) {
-  return list
+  return sortAiUsageRows(list, labelFn)
     .map((item) => {
       const label = labelFn(item);
       return `<tr>
@@ -1058,14 +1095,17 @@ function restoreToggleFocus(selector, datasetKey, id) {
 
 function projectUsageRows(list, periodTotals) {
   const periodVolume = usageTokenVolume(periodTotals);
-  return list
+  return sortAiUsageRows(list, aiProjectLabel)
     .map((project) => {
       const projectName = aiProjectLabel(project);
       const projectId = project.project_id || 'unattributed';
       const expansionKey = aiProjectExpansionKey(projectId);
       const expanded = aiUsageExpandedProjects.has(expansionKey);
       const modelRows = expanded
-        ? (project.by_model || [])
+        ? sortAiUsageRows(
+            project.by_model || [],
+            (model) => `${model.provider || 'unknown'} / ${model.model || 'unknown'}`,
+          )
             .map(
               (model) => `<tr class="ai-project-model-row">
                 <td><span class="ai-model-indent">↳</span>${esc(model.provider || 'unknown')} / ${esc(model.model || 'unknown')}</td>
@@ -1084,13 +1124,13 @@ function projectUsageRows(list, periodTotals) {
 
 function modelUsageRows(list, periodTotals, forceExpanded = false) {
   const periodVolume = usageTokenVolume(periodTotals);
-  return list
+  return sortAiUsageRows(list, aiModelId)
     .map((model) => {
       const modelId = aiModelId(model);
       const expansionKey = aiModelExpansionKey(model);
       const expanded = forceExpanded || aiUsageExpandedModels.has(expansionKey);
       const projectRows = expanded
-        ? (model.by_project || [])
+        ? sortAiUsageRows(model.by_project || [], aiProjectLabel)
             .map(
               (project) => `<tr class="ai-model-project-row" data-project-id="${esc(project.project_id || 'unattributed')}">
                 <td><span class="ai-model-indent">↳</span>${esc(aiProjectLabel(project))}</td>
@@ -1331,14 +1371,14 @@ function paintAiTokensPanel() {
       <table class="ai-table">
         <thead>
           <tr>
-            <th>${esc(firstCol)}</th>
-            <th>Input</th>
-            <th>Cached</th>
-            <th>Output</th>
-            <th>Cache write</th>
-            <th>Total</th>
-            <th>Share</th>
-            <th>Unique calls</th>
+            ${aiUsageHeaderCell(firstCol, 'label')}
+            ${aiUsageHeaderCell('Input', 'input_tokens')}
+            ${aiUsageHeaderCell('Cached', 'cached_tokens')}
+            ${aiUsageHeaderCell('Output', 'output_tokens')}
+            ${aiUsageHeaderCell('Cache write', 'cache_write_tokens')}
+            ${aiUsageHeaderCell('Total', 'total')}
+            ${aiUsageHeaderCell('Share', 'share')}
+            ${aiUsageHeaderCell('Unique calls', 'events')}
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -1541,6 +1581,14 @@ function paintAi() {
       input?.setSelectionRange(input.value.length, input.value.length);
     };
   }
+  document.querySelectorAll('[data-ai-usage-sort]').forEach((button) => {
+    button.onclick = () => {
+      const key = button.dataset.aiUsageSort;
+      setAiUsageSort(key);
+      paintAi();
+      restoreToggleFocus('[data-ai-usage-sort]', 'aiUsageSort', key);
+    };
+  });
   document.querySelectorAll('[data-ai-project-toggle]').forEach((button) => {
     button.onclick = () => {
       const id = button.dataset.aiProjectToggle || 'unknown';

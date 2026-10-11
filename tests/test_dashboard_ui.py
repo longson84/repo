@@ -103,6 +103,36 @@ process.stdout.write(JSON.stringify(output));
         )
         self.assertTrue(focused)
 
+    def test_ai_numeric_sort_defaults_descending_then_reverses(self):
+        state = self.render(
+            "(() => { aiUsageSortKey=null; aiUsageSortDir=1;"
+            "setAiUsageSort('cached_tokens'); const first=[aiUsageSortKey,aiUsageSortDir];"
+            "setAiUsageSort('cached_tokens'); return [first,[aiUsageSortKey,aiUsageSortDir]]; })()"
+        )
+        self.assertEqual(state, [["cached_tokens", -1], ["cached_tokens", 1]])
+
+    def test_ai_model_rows_sort_parents_and_nested_projects_by_cached_tokens(self):
+        html = self.render(
+            "(aiUsageSortKey='cached_tokens',aiUsageSortDir=-1,modelUsageRows(["
+            "{provider:'p',model:'low',input_tokens:0,cached_tokens:10,output_tokens:0,cache_write_tokens:0,events:1,by_project:[]},"
+            "{provider:'p',model:'high',input_tokens:0,cached_tokens:20,output_tokens:0,cache_write_tokens:0,events:1,by_project:["
+            "{project_id:'small',project_name:'Small',input_tokens:0,cached_tokens:2,output_tokens:0,cache_write_tokens:0,events:1},"
+            "{project_id:'large',project_name:'Large',input_tokens:0,cached_tokens:8,output_tokens:0,cache_write_tokens:0,events:1}]}],"
+            "{input_tokens:0,cached_tokens:30,output_tokens:0,cache_write_tokens:0},true))"
+        )
+        self.assertLess(html.index("p / high"), html.index("p / low"))
+        self.assertLess(html.index("Large"), html.index("Small"))
+
+    def test_ai_label_sort_and_sortable_header_are_accessible(self):
+        result = self.render(
+            "(() => { aiUsageSortKey='label'; aiUsageSortDir=1; return {"
+            "rows:usageDataRows([{tool:'Zulu'},{tool:'Alpha'}],x=>x.tool,0),"
+            "header:aiUsageHeaderCell('Name','label')}; })()"
+        )
+        self.assertLess(result["rows"].index("Alpha"), result["rows"].index("Zulu"))
+        self.assertIn('data-ai-usage-sort="label"', result["header"])
+        self.assertIn('aria-sort="ascending"', result["header"])
+
 
 if __name__ == "__main__":
     unittest.main()
