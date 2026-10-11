@@ -131,7 +131,9 @@ def collect_repository_commits(
     )
 
 
-def _period_series(commits: Sequence[Mapping[str, Any]], now: datetime) -> dict[str, Any]:
+def _period_series(
+    commits: Sequence[Mapping[str, Any]], now: datetime
+) -> dict[str, Any]:
     by_day = Counter()
     by_week = Counter()
     by_month = Counter()
@@ -167,7 +169,10 @@ def _period_series(commits: Sequence[Mapping[str, Any]], now: datetime) -> dict[
             year -= 1
     month_keys.reverse()
     if by_year:
-        year_keys = [str(value) for value in range(min(map(int, by_year)), max(map(int, by_year)) + 1)]
+        year_keys = [
+            str(value)
+            for value in range(min(map(int, by_year)), max(map(int, by_year)) + 1)
+        ]
     else:
         year_keys = [str(today.year)]
 
@@ -191,7 +196,8 @@ def aggregate_repository_history(
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     ordered = sorted(
-        commits, key=lambda item: (str(item.get("iso") or ""), str(item.get("sha") or ""))
+        commits,
+        key=lambda item: (str(item.get("iso") or ""), str(item.get("sha") or "")),
     )
     parsed = [(item, _stamp(item.get("iso"))) for item in ordered]
     dated = [(item, stamp) for item, stamp in parsed if stamp is not None]
@@ -199,8 +205,7 @@ def aggregate_repository_history(
     last = dated[-1][0] if dated else None
     windows = {7: 0, 30: 0, 90: 0}
     line_windows = {
-        days: {"additions": 0, "deletions": 0, "net": 0}
-        for days in (7, 30, 90)
+        days: {"additions": 0, "deletions": 0, "net": 0} for days in (7, 30, 90)
     }
     lines_total = {"additions": 0, "deletions": 0, "net": 0}
     lines_by_date: dict[str, dict[str, int]] = {}
@@ -209,7 +214,12 @@ def aggregate_repository_history(
         contributors[str(item.get("author_name") or "Unknown")] += 1
         additions = int(item.get("additions") or 0)
         deletions = int(item.get("deletions") or 0)
-        for bucket in (lines_total, lines_by_date.setdefault(stamp.date().isoformat(), {"additions": 0, "deletions": 0, "net": 0})):
+        for bucket in (
+            lines_total,
+            lines_by_date.setdefault(
+                stamp.date().isoformat(), {"additions": 0, "deletions": 0, "net": 0}
+            ),
+        ):
             bucket["additions"] += additions
             bucket["deletions"] += deletions
             bucket["net"] += additions - deletions

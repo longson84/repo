@@ -111,7 +111,9 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
 
         for panel in result.values():
             self.assertIn("Selected GitHub repositories", panel)
-        self.assertIn("Select a repository with a github.com remote", result["sessions"])
+        self.assertIn(
+            "Select a repository with a github.com remote", result["sessions"]
+        )
         self.assertIn("7 events excluded", result["tokens"])
         self.assertNotIn(" path ·", result["tokens"])
 

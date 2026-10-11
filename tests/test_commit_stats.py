@@ -219,7 +219,7 @@ class PrimaryWorkspaceTests(unittest.TestCase):
     def test_no_existing_workspace_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            workspaces = [{"path": str(root / "missing") }]
+            workspaces = [{"path": str(root / "missing")}]
             self.assertIsNone(choose_primary_workspace(workspaces, None))
 
 
