@@ -46,9 +46,150 @@ class CompanionTests(unittest.TestCase):
         self.git(path, "commit", "-m", "initial")
         return path
 
+    def github_repo(self, name, *, remote_name="origin"):
+        path = self.repo(name)
+        self.git(
+            path,
+            "remote",
+            "add",
+            remote_name,
+            f"https://github.com/example/{name}.git",
+        )
+        return path
+
+    def test_state_reconciles_selection_identity_and_caches_on_startup(self):
+        api = self.api()
+        selected = self.repo("selected")
+        self.git(
+            selected,
+            "remote",
+            "add",
+            "origin",
+            "https://gitlab.com/example/selected.git",
+        )
+        self.git(
+            selected,
+            "remote",
+            "add",
+            "github",
+            "git@github.com:example/selected.git",
+        )
+        linked = self.root / "selected-linked"
+        self.git(selected, "worktree", "add", "-b", "linked", str(linked))
+        local = self.repo("local")
+        gitlab = self.repo("gitlab")
+        self.git(
+            gitlab,
+            "remote",
+            "add",
+            "origin",
+            "https://gitlab.com/example/gitlab.git",
+        )
+        ordinary = self.root / "ordinary"
+        ordinary.mkdir()
+        missing = self.root / "missing"
+        settings = self.root / "settings.json"
+        candidates = [selected, linked, local, gitlab, ordinary, missing]
+        settings.write_text(
+            json.dumps({"paths": [str(path) for path in candidates]}) + "\n"
+        )
+        selected_id = "remote:github.com/example/selected"
+        removed_id = "remote:github.com/example/removed"
+        other_removed_id = "remote:github.com/example/other-removed"
+        api.save_identity_config(
+            self.root / "project-identities.json",
+            {
+                "version": 1,
+                "projects": [
+                    {
+                        "id": "kept",
+                        "name": "Kept",
+                        "repositories": [selected_id, removed_id],
+                        "primary_workspaces": {
+                            selected_id: str(selected),
+                            removed_id: str(missing),
+                        },
+                        "workspace_aliases": [str(linked), str(missing)],
+                    },
+                    {
+                        "id": "removed",
+                        "name": "Removed",
+                        "repositories": [other_removed_id],
+                    },
+                ],
+            },
+        )
+        (self.root / "stats.json").write_text(
+            json.dumps({"version": 2, "repos": {str(local): {"stale": True}}})
+        )
+        (self.root / "scan.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "scannedAt": "2026-10-11T00:00:00+00:00",
+                    "repos": {str(local): {"stale": True}},
+                }
+            )
+        )
+
+        state = api.State([self.root], settings)
+
+        self.assertEqual(state.paths, [str(selected.resolve()), str(linked.resolve())])
+        self.assertEqual(state.selected_repository_ids(), {selected_id})
+        self.assertEqual(state.last_reconciliation["removed_paths"], 4)
+        self.assertEqual(state.last_reconciliation["removed_repository_memberships"], 2)
+        self.assertEqual(state.last_reconciliation["removed_projects"], 1)
+        self.assertEqual(
+            state.identity_config["projects"][0]["repositories"], [selected_id]
+        )
+        self.assertEqual(
+            state.identity_config["projects"][0]["workspace_aliases"],
+            [str(linked.resolve())],
+        )
+        self.assertEqual(state.stats_cache, {"version": 2, "repos": {}})
+        self.assertEqual(
+            state.scan_cache, {"version": 2, "scannedAt": None, "repos": {}}
+        )
+        self.assertEqual(settings.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(state.identity_path.stat().st_mode & 0o777, 0o600)
+
+        second = state.reconcile_tracking()
+
+        self.assertEqual(
+            {key: second[key] for key in state.RECONCILIATION_COUNT_KEYS},
+            {key: 0 for key in state.RECONCILIATION_COUNT_KEYS},
+        )
+
+    def test_reconciliation_prunes_repository_after_github_remote_disappears(self):
+        api = self.api()
+        repo = self.github_repo("disappearing")
+        state = api.State([self.root], self.root / "settings.json")
+        state.reconcile_tracking([str(repo)])
+        self.assertEqual(state.paths, [str(repo.resolve())])
+
+        self.git(repo, "remote", "remove", "origin")
+        result = state.reconcile_tracking()
+
+        self.assertEqual(state.paths, [])
+        self.assertEqual(result["removed_paths"], 1)
+
+    def test_reconciliation_preserves_malformed_identity_document(self):
+        api = self.api()
+        repo = self.github_repo("valid")
+        settings = self.root / "settings.json"
+        settings.write_text(json.dumps({"paths": [str(repo)]}) + "\n")
+        identity_path = self.root / "project-identities.json"
+        identity_path.write_bytes(b"{malformed\n")
+
+        state = api.State([self.root], settings)
+
+        self.assertEqual(identity_path.read_bytes(), b"{malformed\n")
+        self.assertTrue(state.last_reconciliation["invalid_identity_config"])
+        self.assertEqual(state.paths, [str(repo.resolve())])
+
     def test_discovery_and_selection_are_persistent(self):
         api = self.api()
-        repo = self.repo("chosen")
+        repo = self.github_repo("chosen")
         self.repo("excluded")
         state = api.State([self.root], self.root / "settings.json")
         self.assertEqual(len(state.discover(str(self.root))), 2)
@@ -168,7 +309,7 @@ class CompanionTests(unittest.TestCase):
 
     def test_version_one_derived_caches_are_rebuilt_without_touching_identity(self):
         api = self.api()
-        repo = self.repo("migration")
+        repo = self.github_repo("migration")
         settings = self.root / "settings.json"
         settings.write_text(json.dumps({"paths": [str(repo.resolve())]}) + "\n")
         identity_path = self.root / "project-identities.json"
@@ -176,7 +317,13 @@ class CompanionTests(unittest.TestCase):
             json.dumps(
                 {
                     "version": 1,
-                    "projects": [{"id": "migration", "name": "Migration"}],
+                    "projects": [
+                        {
+                            "id": "migration",
+                            "name": "Migration",
+                            "repositories": ["remote:github.com/example/migration"],
+                        }
+                    ],
                 }
             )
             + "\n"
@@ -670,7 +817,7 @@ class CompanionTests(unittest.TestCase):
 
     def test_last_scan_persists_across_reload(self):
         api = self.api()
-        repo = self.repo("scanned")
+        repo = self.github_repo("scanned")
         config = self.root / "settings.json"
         state = api.State([self.root], config)
         state.select([str(repo)])

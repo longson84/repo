@@ -234,6 +234,58 @@ def save_identity_config(path: Path, payload: Mapping[str, Any]) -> dict[str, An
     return normalized
 
 
+def prune_identity_config(
+    config: Mapping[str, Any],
+    selected_repository_ids: set[str],
+    alias_repository_ids: Mapping[str, str],
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """Remove identity entries that are outside the selected repository scope."""
+    counts = {
+        "removed_repository_memberships": 0,
+        "removed_primary_workspaces": 0,
+        "removed_workspace_aliases": 0,
+        "removed_projects": 0,
+    }
+    projects = []
+    for source in config.get("projects", []):
+        project = dict(source)
+        repositories = list(source.get("repositories", []))
+        retained_repositories = [
+            repository_id
+            for repository_id in repositories
+            if repository_id in selected_repository_ids
+        ]
+        counts["removed_repository_memberships"] += len(repositories) - len(
+            retained_repositories
+        )
+
+        primaries = dict(source.get("primary_workspaces", {}))
+        retained_primaries = {
+            repository_id: path
+            for repository_id, path in primaries.items()
+            if repository_id in retained_repositories
+        }
+        counts["removed_primary_workspaces"] += len(primaries) - len(retained_primaries)
+
+        aliases = list(source.get("workspace_aliases", []))
+        retained_aliases = [
+            alias
+            for alias in aliases
+            if alias_repository_ids.get(alias) in selected_repository_ids
+        ]
+        counts["removed_workspace_aliases"] += len(aliases) - len(retained_aliases)
+
+        if not retained_repositories:
+            counts["removed_workspace_aliases"] += len(retained_aliases)
+            counts["removed_projects"] += 1
+            continue
+        project["repositories"] = retained_repositories
+        project["primary_workspaces"] = retained_primaries
+        project["workspace_aliases"] = retained_aliases
+        projects.append(project)
+    return {"version": 1, "projects": projects}, counts
+
+
 def _run_git(path: str, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", path, *args],

@@ -37,8 +37,12 @@ from ai.search import search_transcripts  # noqa: E402
 from project_identity import (  # noqa: E402
     EMPTY_CONFIG,
     ProjectIdentityResolver,
+    canonicalize_workspace_path,
+    is_github_repository_id,
     load_identity_config,
     normalize_remote_url,
+    prune_identity_config,
+    resolve_live_repository,
     save_identity_config,
 )
 from commit_stats import (  # noqa: E402
@@ -1078,6 +1082,14 @@ def _aggregate_project_stats(project_id, project_name, repositories):
 
 
 class State:
+    RECONCILIATION_COUNT_KEYS = (
+        "removed_paths",
+        "removed_repository_memberships",
+        "removed_primary_workspaces",
+        "removed_workspace_aliases",
+        "removed_projects",
+    )
+
     def __init__(self, roots, config):
         self.roots = [Path(p).expanduser().resolve(strict=True) for p in roots]
         self.config = Path(config)
@@ -1099,13 +1111,20 @@ class State:
         self.identity_resolver = ProjectIdentityResolver(self.identity_config)
         self.identity_config_warnings = []
         self.ai_detect_cache = None
+        self._selected_repository_ids = set()
+        self.last_reconciliation = {
+            **{key: 0 for key in self.RECONCILIATION_COUNT_KEYS},
+            "invalid_identity_config": False,
+        }
         if self.config.exists():
             raw = json.loads(self.config.read_text())
-            self.paths = [str(self.checked(p)) for p in raw.get("paths", [])]
+            raw_paths = raw.get("paths", [])
+            self.paths = list(raw_paths) if isinstance(raw_paths, list) else []
         self.reload_identity_config()
         self.load_stats_cache()
         self.load_scan_cache()
         self.load_ai_detect_cache()
+        self.reconcile_tracking()
 
     def reload_identity_config(self):
         try:
@@ -1135,6 +1154,86 @@ class State:
         self.identity_config_warnings = list(warnings or [])
         if invalidate:
             self.invalidate_identity_caches()
+
+    def _candidate_path(self, value):
+        path = Path(canonicalize_workspace_path(str(value)))
+        if not any(path == root or root in path.parents for root in self.roots):
+            raise ValueError(
+                "Path is outside the folders approved when starting the companion."
+            )
+        return path
+
+    def _save_selection(self):
+        self.config.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.config.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"paths": self.paths}, indent=2) + "\n")
+        temporary.chmod(0o600)
+        temporary.replace(self.config)
+
+    def selected_repository_ids(self):
+        return set(self._selected_repository_ids)
+
+    def reconcile_tracking(self, candidate_paths=None):
+        candidates = self.paths if candidate_paths is None else candidate_paths
+        candidates = list(candidates or [])
+        retained_paths = []
+        selected_repository_ids = set()
+        for value in candidates:
+            try:
+                path = self._candidate_path(value)
+                repository_id, _ = resolve_live_repository(str(path))
+            except (OSError, TypeError, ValueError):
+                continue
+            if not is_github_repository_id(repository_id):
+                continue
+            path_text = str(path)
+            if path_text not in retained_paths:
+                retained_paths.append(path_text)
+            selected_repository_ids.add(repository_id)
+
+        selection_changed = retained_paths != self.paths
+        self.paths = retained_paths
+        self._selected_repository_ids = selected_repository_ids
+        if selection_changed:
+            self._save_selection()
+
+        invalid_identity_config = any(
+            warning.get("code") == "invalid_identity_config"
+            for warning in self.identity_config_warnings
+        )
+        identity_counts = {
+            key: 0 for key in self.RECONCILIATION_COUNT_KEYS if key != "removed_paths"
+        }
+        identity_changed = False
+        if not invalid_identity_config:
+            alias_repository_ids = {}
+            for project in self.identity_config.get("projects", []):
+                for alias in project.get("workspace_aliases", []):
+                    try:
+                        repository_id, _ = resolve_live_repository(alias)
+                    except (OSError, TypeError, ValueError):
+                        continue
+                    if repository_id in selected_repository_ids:
+                        alias_repository_ids[alias] = repository_id
+            pruned, identity_counts = prune_identity_config(
+                self.identity_config,
+                selected_repository_ids,
+                alias_repository_ids,
+            )
+            identity_changed = pruned != self.identity_config
+            if identity_changed:
+                saved = save_identity_config(self.identity_path, pruned)
+                self.install_identity_config(saved)
+
+        if selection_changed or identity_changed:
+            self.invalidate_identity_caches()
+        result = {
+            "removed_paths": len(candidates) - len(retained_paths),
+            **identity_counts,
+            "invalid_identity_config": invalid_identity_config,
+        }
+        self.last_reconciliation = result
+        return dict(result)
 
     def save_identity_config(self, payload, expected_fingerprint=None):
         current = load_identity_config(self.identity_path)

@@ -1,4 +1,5 @@
 import json
+import copy
 import os
 import pathlib
 import subprocess
@@ -15,6 +16,7 @@ from project_identity import (  # noqa: E402
     is_github_repository_id,
     load_identity_config,
     normalize_remote_url,
+    prune_identity_config,
     resolve_live_repository,
     save_identity_config,
 )
@@ -103,6 +105,68 @@ class PathAndRemoteTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_prune_identity_config_removes_inactive_fields_without_mutation(self):
+        selected = "remote:github.com/owner/selected"
+        removed = "remote:github.com/owner/removed"
+        live_alias = "/tmp/live-selected"
+        missing_alias = "/tmp/missing"
+        alias_only = "/tmp/alias-only"
+        config = {
+            "version": 1,
+            "projects": [
+                {
+                    "id": "mixed",
+                    "name": "Mixed",
+                    "repositories": [selected, removed],
+                    "primary_workspaces": {
+                        selected: "/tmp/selected",
+                        removed: "/tmp/removed",
+                    },
+                    "workspace_aliases": [live_alias, missing_alias],
+                },
+                {
+                    "id": "alias-only",
+                    "name": "Alias only",
+                    "repositories": [],
+                    "primary_workspaces": {},
+                    "workspace_aliases": [alias_only],
+                },
+            ],
+        }
+        original = copy.deepcopy(config)
+
+        pruned, counts = prune_identity_config(
+            config,
+            {selected},
+            {live_alias: selected, alias_only: selected},
+        )
+
+        self.assertEqual(config, original)
+        self.assertEqual(
+            pruned,
+            {
+                "version": 1,
+                "projects": [
+                    {
+                        "id": "mixed",
+                        "name": "Mixed",
+                        "repositories": [selected],
+                        "primary_workspaces": {selected: "/tmp/selected"},
+                        "workspace_aliases": [live_alias],
+                    }
+                ],
+            },
+        )
+        self.assertEqual(
+            counts,
+            {
+                "removed_repository_memberships": 1,
+                "removed_primary_workspaces": 1,
+                "removed_workspace_aliases": 2,
+                "removed_projects": 1,
+            },
+        )
+
     def test_missing_config_loads_empty_versioned_document(self):
         with tempfile.TemporaryDirectory() as tmp:
             payload = load_identity_config(pathlib.Path(tmp) / "missing.json")
@@ -221,7 +285,9 @@ class ResolverTests(unittest.TestCase):
             repo = pathlib.Path(tmp) / "repo"
             init_repo(repo)
             run_git(repo, "remote", "add", "aaa", "git@github.com:owner/other.git")
-            run_git(repo, "remote", "add", "origin", "https://github.com/Owner/Main.git")
+            run_git(
+                repo, "remote", "add", "origin", "https://github.com/Owner/Main.git"
+            )
 
             repository_id, _ = resolve_live_repository(str(repo))
 
@@ -231,9 +297,13 @@ class ResolverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
             init_repo(repo)
-            run_git(repo, "remote", "add", "origin", "https://gitlab.com/owner/main.git")
+            run_git(
+                repo, "remote", "add", "origin", "https://gitlab.com/owner/main.git"
+            )
             run_git(repo, "remote", "add", "zulu", "git@github.com:owner/zulu.git")
-            run_git(repo, "remote", "add", "alpha", "ssh://git@github.com/Owner/Alpha.git")
+            run_git(
+                repo, "remote", "add", "alpha", "ssh://git@github.com/Owner/Alpha.git"
+            )
 
             repository_id, _ = resolve_live_repository(str(repo))
 
