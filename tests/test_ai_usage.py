@@ -224,6 +224,24 @@ class ClaudeCodexUsageTests(unittest.TestCase):
 
             self.assertEqual(len(result["events"]), 1)
             self.assertEqual(result["events"][0]["output_tokens"], 5)
+            self.assertEqual(result["events"][0]["execution_kind"], "child")
+            self.assertIn("agent-1", result["events"][0]["execution_key"])
+
+            parsed = [
+                descriptor["parse"]() for descriptor in claude_code.usage_files(root)
+            ]
+            root_batch = next(
+                batch
+                for batch in parsed
+                if batch["events"][0]["execution_kind"] == "root"
+            )
+            child_batch = next(
+                batch
+                for batch in parsed
+                if batch["events"][0]["execution_kind"] == "child"
+            )
+            reversed_result = claude_code.merge_usage_batches([root_batch, child_batch])
+            self.assertEqual(reversed_result["events"][0]["execution_kind"], "child")
 
     def test_claude_malformed_row_preserves_valid_usage_and_reports_warning(self):
         with tempfile.TemporaryDirectory() as tmp:

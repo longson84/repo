@@ -153,6 +153,10 @@ class UsageCacheTests(unittest.TestCase):
             source.write_text("valid")
             cache = root / "usage.db"
             cache.write_bytes(b"not sqlite")
+            wal = root / "usage.db-wal"
+            shm = root / "usage.db-shm"
+            wal.write_bytes(b"stale wal")
+            shm.write_bytes(b"stale shm")
             result = refresh_usage_cache(
                 cache, [self.descriptor(source, lambda: self.batch(3))]
             )
@@ -160,6 +164,8 @@ class UsageCacheTests(unittest.TestCase):
             self.assertEqual(result["cache"]["status"], "bypassed")
             self.assertEqual(result["warnings"][-1]["code"], "cache_unavailable")
             self.assertTrue(list(root.glob("usage.db.corrupt-*")))
+            self.assertFalse(wal.exists())
+            self.assertFalse(shm.exists())
 
     def test_cache_never_persists_transcript_text(self):
         with tempfile.TemporaryDirectory() as tmp:
