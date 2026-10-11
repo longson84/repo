@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "companion"))
 
 from ai.adapters import antigravity, claude_code, codex  # noqa: E402
 from ai import usage as usage_mod  # noqa: E402
+from project_identity import ProjectIdentityResolver  # noqa: E402
 
 
 def _varint(n: int) -> bytes:
@@ -490,6 +491,257 @@ class ClaudeCodexUsageTests(unittest.TestCase):
 
 
 class AggregateUsageTests(unittest.TestCase):
+    def aggregate_events(self, events, resolver):
+        source = {"id": "codex.home", "path": "/synthetic", "surface": "unknown"}
+        with (
+            mock.patch.object(usage_mod, "resolve_sources", return_value=[source]),
+            mock.patch.object(
+                usage_mod,
+                "_collect_source_usage",
+                return_value={"events": events, "warnings": [], "reconciliation": []},
+            ),
+        ):
+            return usage_mod.aggregate_usage(
+                sources=["codex.home"], identity_resolver=resolver
+            )
+
+    def test_canonical_aliases_merge_case_and_historical_worktrees_without_suffix_guessing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            eravn = root / "eravnTrans"
+            eravn.mkdir()
+            company_six = str(root / "projectCompanyQ-plan-6-google")
+            company_seven = str(root / "projectCompanyQ-plan-7-tasks")
+            unrelated = str(root / "projectCompanyQ-plan-8-unrelated")
+            conflict = str(root / "ambiguous")
+            resolver = ProjectIdentityResolver(
+                {
+                    "version": 1,
+                    "projects": [
+                        {
+                            "id": "eravntrans",
+                            "name": "eravnTrans",
+                            "workspace_aliases": [str(root / "eravntrans")],
+                        },
+                        {
+                            "id": "projectcompanyq",
+                            "name": "projectCompanyQ",
+                            "repositories": [
+                                "remote:github.com/longson84/projectcompanyq"
+                            ],
+                            "workspace_aliases": [company_six, company_seven],
+                        },
+                        {
+                            "id": "ambiguous-one",
+                            "name": "Ambiguous One",
+                            "workspace_aliases": [conflict],
+                        },
+                        {
+                            "id": "ambiguous-two",
+                            "name": "Ambiguous Two",
+                            "workspace_aliases": [conflict],
+                        },
+                    ],
+                }
+            )
+            paths = (
+                str(eravn),
+                str(root / "ERAVNTRANS"),
+                company_six,
+                company_seven,
+                unrelated,
+                conflict,
+            )
+            events = []
+            for index, cwd in enumerate(paths):
+                events.append(
+                    {
+                        "event_key": f"event-{index}",
+                        "conversation_key": f"conversation-{index}",
+                        "source_id": "codex.home",
+                        "tool": "codex",
+                        "surface": "terminal",
+                        "provider": "openai",
+                        "model": "gpt-test",
+                        "cwd": cwd,
+                        "project": pathlib.Path(cwd).name,
+                        "date": "2026-09-15",
+                        "input_tokens": 10,
+                        "cached_tokens": 2,
+                        "output_tokens": 3,
+                        "cache_write_tokens": 1,
+                    }
+                )
+
+            result = self.aggregate_events(events, resolver)
+
+            projects = {row["project_id"]: row for row in result["by_project"]}
+            self.assertEqual(projects["eravntrans"]["events"], 2)
+            self.assertEqual(projects["projectcompanyq"]["events"], 2)
+            self.assertEqual(projects["unattributed"]["events"], 2)
+            self.assertNotIn("projectCompanyQ-plan-8-unrelated", projects)
+            warning_codes = {
+                item["code"] for item in result["quality"]["identity_warnings"]
+            }
+            self.assertIn("workspace_missing", warning_codes)
+            self.assertIn("conflicting_workspace_alias", warning_codes)
+            self.assertEqual(
+                result["quality"]["attribution"],
+                {"git": 0, "configured": 4, "path": 0, "unattributed": 2},
+            )
+
+    def test_all_canonical_dimensions_and_inverse_period_rollups_reconcile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            alpha = str(root / "alpha-old")
+            beta = str(root / "beta-old")
+            resolver = ProjectIdentityResolver(
+                {
+                    "version": 1,
+                    "projects": [
+                        {
+                            "id": "alpha",
+                            "name": "Alpha",
+                            "repositories": ["remote:github.com/example/alpha"],
+                            "workspace_aliases": [alpha],
+                        },
+                        {
+                            "id": "beta",
+                            "name": "Beta",
+                            "repositories": ["remote:github.com/example/beta"],
+                            "workspace_aliases": [beta],
+                        },
+                    ],
+                }
+            )
+            base = {
+                "source_id": "codex.home",
+                "tool": "codex",
+                "surface": "terminal",
+                "date": "2026-09-15",
+                "cached_tokens": 2,
+                "cache_write_tokens": 1,
+            }
+            events = [
+                {
+                    **base,
+                    "event_key": "alpha-openai",
+                    "conversation_key": "one",
+                    "provider": "openai",
+                    "model": "shared",
+                    "cwd": alpha,
+                    "input_tokens": 10,
+                    "output_tokens": 3,
+                },
+                {
+                    **base,
+                    "event_key": "alpha-anthropic",
+                    "conversation_key": "two",
+                    "provider": "anthropic",
+                    "model": "shared",
+                    "cwd": alpha,
+                    "input_tokens": 20,
+                    "output_tokens": 4,
+                },
+                {
+                    **base,
+                    "event_key": "beta-openai",
+                    "conversation_key": "three",
+                    "provider": "openai",
+                    "model": "shared",
+                    "cwd": beta,
+                    "input_tokens": 30,
+                    "output_tokens": 5,
+                },
+            ]
+
+            result = self.aggregate_events(events, resolver)
+
+            fields = (
+                "input_tokens",
+                "cached_tokens",
+                "output_tokens",
+                "cache_write_tokens",
+                "events",
+            )
+            for dimension in ("by_project", "by_repository", "by_workspace"):
+                for field in fields:
+                    self.assertEqual(
+                        result["totals"][field],
+                        sum(row[field] for row in result[dimension]),
+                    )
+            self.assertEqual(
+                {(row["provider"], row["model"]) for row in result["by_model"]},
+                {("openai", "shared"), ("anthropic", "shared")},
+            )
+            for series_name in ("by_day", "by_week", "by_month", "by_year"):
+                period = result[series_name][0]
+                for field in fields:
+                    for dimension in (
+                        "by_project",
+                        "by_repository",
+                        "by_workspace",
+                        "by_model",
+                    ):
+                        self.assertEqual(
+                            period[field],
+                            sum(row[field] for row in period[dimension]),
+                        )
+                    for project in period["by_project"]:
+                        self.assertEqual(
+                            project[field],
+                            sum(row[field] for row in project["by_model"]),
+                        )
+                    for model in period["by_model"]:
+                        self.assertEqual(
+                            model[field],
+                            sum(row[field] for row in model["by_project"]),
+                        )
+
+    def test_identity_resolution_runs_once_per_unique_cwd_after_event_dedup(self):
+        class CountingResolver:
+            def __init__(self):
+                self.calls = []
+
+            def resolve(self, cwd):
+                self.calls.append(cwd)
+                return {
+                    "workspace_id": cwd,
+                    "workspace_name": pathlib.Path(cwd).name,
+                    "repository_id": "remote:example.test/repository",
+                    "repository_name": "Repository",
+                    "project_id": "project",
+                    "project_name": "Project",
+                    "identity_confidence": "configured",
+                    "identity_warnings": [],
+                }
+
+        resolver = CountingResolver()
+        base = {
+            "event_key": "same-provider-call",
+            "conversation_key": "one",
+            "source_id": "codex.home",
+            "tool": "codex",
+            "surface": "terminal",
+            "provider": "openai",
+            "model": "gpt-test",
+            "date": "2026-09-15",
+            "input_tokens": 10,
+            "cached_tokens": 0,
+            "output_tokens": 1,
+            "cache_write_tokens": 0,
+        }
+        events = [
+            {**base, "cwd": "/workspace/one"},
+            {**base, "cwd": "/workspace/copied-row", "output_tokens": 3},
+            {**base, "event_key": "other", "cwd": "/workspace/one"},
+        ]
+
+        result = self.aggregate_events(events, resolver)
+
+        self.assertEqual(result["event_count"], 2)
+        self.assertEqual(result["totals"]["output_tokens"], 4)
+        self.assertEqual(resolver.calls, ["/workspace/one"])
     def test_aggregate_reuses_incremental_cache_on_second_scan(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = pathlib.Path(tmp)

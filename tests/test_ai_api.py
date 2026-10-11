@@ -158,6 +158,53 @@ class AiApiTests(unittest.TestCase):
         self.assertNotIn("cost_usd", usage["totals"])
         self.assertNotIn("pricing_coverage", usage)
         self.assertNotIn("prices", usage)
+        self.assertEqual(usage["version"], 2)
+        self.assertIn("by_repository", usage)
+        self.assertIn("by_workspace", usage)
+
+    def test_usage_api_applies_current_project_identity_configuration(self):
+        cwd = str(self.root / "DeletedCompanyWorktree")
+        status, _ = self.request(
+            "POST",
+            "/api/project-identities",
+            {
+                "version": 1,
+                "projects": [
+                    {
+                        "id": "company",
+                        "name": "Company",
+                        "repositories": ["remote:github.com/example/company"],
+                        "workspace_aliases": [cwd],
+                    }
+                ],
+            },
+        )
+        self.assertEqual(status, 200)
+        transcript = self.root / ".claude" / "projects" / "demo" / "session.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "cwd": cwd,
+                    "timestamp": "2026-09-15T12:00:00Z",
+                    "message": {
+                        "id": "configured-message",
+                        "model": "claude-sonnet-4-6",
+                        "usage": {"input_tokens": 4, "output_tokens": 2},
+                    },
+                }
+            )
+            + "\n"
+        )
+
+        status, usage = self.request(
+            "POST", "/api/ai/usage", {"sources": ["claude.code"]}
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(usage["by_project"][0]["project_id"], "company")
+        self.assertEqual(usage["by_project"][0]["project_name"], "Company")
 
     def test_api_exposes_quality_reconciliation_and_cache_metadata(self):
         status, usage = self.request(

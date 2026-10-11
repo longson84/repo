@@ -1234,6 +1234,7 @@ class State:
                 conversation_keys=conversation_keys,
                 compound_sessions=compound_sessions,
                 cache_path=self.ai_usage_cache_path,
+                identity_resolver=self.identity_resolver,
             )
 
     def run_ai_search(self, data):
