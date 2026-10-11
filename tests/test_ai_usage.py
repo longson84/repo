@@ -319,6 +319,111 @@ class ClaudeCodexUsageTests(unittest.TestCase):
             total_in = sum(e["input_tokens"] for e in events)
             self.assertEqual(total_in, 1300)
 
+    def test_codex_usage_before_turn_context_has_unknown_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            path = root / "sessions" / "2026" / "03" / "01" / "rollout-early.jsonl"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                "\n".join(
+                    json.dumps(row)
+                    for row in (
+                        {
+                            "type": "session_meta",
+                            "payload": {
+                                "id": "early",
+                                "originator": "codex-tui",
+                                "source": "cli",
+                            },
+                        },
+                        {
+                            "type": "event_msg",
+                            "timestamp": "2026-03-01T12:00:00Z",
+                            "payload": {
+                                "type": "token_count",
+                                "info": {
+                                    "last_token_usage": {
+                                        "input_tokens": 10,
+                                        "cached_input_tokens": 4,
+                                        "output_tokens": 2,
+                                    }
+                                },
+                            },
+                        },
+                    )
+                )
+                + "\n"
+            )
+
+            result = codex.collect_usage(root)
+
+            self.assertEqual(result["events"][0]["model"], "unknown")
+            self.assertEqual(result["events"][0]["surface"], "terminal")
+
+    def test_codex_reconciliation_reports_matched_different_and_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp)
+            root = home / ".codex" / "sessions" / "2026" / "03" / "01"
+            root.mkdir(parents=True)
+            fixtures = (
+                ("matched", 10),
+                ("different", 15),
+                ("unavailable", None),
+            )
+            for session_id, cumulative_input in fixtures:
+                info = {
+                    "last_token_usage": {
+                        "input_tokens": 10,
+                        "cached_input_tokens": 4,
+                        "output_tokens": 2,
+                    }
+                }
+                if cumulative_input is not None:
+                    info["total_token_usage"] = {
+                        "input_tokens": cumulative_input,
+                        "cached_input_tokens": 4,
+                        "output_tokens": 2,
+                    }
+                rows = (
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": session_id,
+                            "originator": "codex-tui",
+                            "source": "cli",
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "timestamp": f"2026-03-01T12:00:0{len(session_id)}Z",
+                        "payload": {"type": "token_count", "info": info},
+                    },
+                )
+                (root / f"rollout-{session_id}.jsonl").write_text(
+                    "\n".join(json.dumps(row) for row in rows) + "\n"
+                )
+
+            batch = codex.collect_usage(home / ".codex")
+            statuses = {
+                item["execution_id"]: item["status"]
+                for item in batch["reconciliation"]
+            }
+            aggregate = usage_mod.aggregate_usage(
+                sources=["codex.home"], home=home, env={}
+            )
+
+            self.assertEqual(
+                statuses,
+                {
+                    "matched": "matched",
+                    "different": "different",
+                    "unavailable": "unavailable",
+                },
+            )
+            self.assertEqual(aggregate["quality"]["reconciliation"]["matched"], 1)
+            self.assertEqual(aggregate["quality"]["reconciliation"]["different"], 1)
+            self.assertEqual(aggregate["quality"]["reconciliation"]["unavailable"], 1)
+
 
 class AggregateUsageTests(unittest.TestCase):
     def test_antigravity_duplicate_step_identity_is_counted_once_across_sources(self):

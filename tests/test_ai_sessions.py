@@ -195,6 +195,72 @@ class SessionAdapterTests(unittest.TestCase):
         self.assertEqual(rows[0]["id"], "abcd")
         self.assertEqual(rows[0]["project"], "bar")
 
+    def test_codex_surfaces_come_from_desktop_tui_vscode_and_exec_metadata(self):
+        root = self.home / ".codex" / "sessions" / "2026" / "09" / "01"
+        root.mkdir(parents=True)
+        fixtures = (
+            ("desktop", "Codex Desktop", "vscode", "desktop"),
+            ("terminal", "codex-tui", "cli", "terminal"),
+            ("vscode", "other-client", "vscode", "vscode"),
+            ("exec", "codex_exec", "exec", "exec"),
+        )
+        for session_id, originator, source, _expected in fixtures:
+            (root / f"rollout-{session_id}.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": session_id,
+                            "originator": originator,
+                            "source": source,
+                        },
+                    }
+                )
+                + "\n"
+            )
+
+        rows = codex.list_sessions(self.home / ".codex")
+
+        surfaces = {row["id"]: row["surface"] for row in rows}
+        self.assertEqual(
+            surfaces,
+            {session_id: expected for session_id, _o, _s, expected in fixtures},
+        )
+
+    def test_codex_child_discovered_before_parent_inherits_parent_surface(self):
+        root = self.home / ".codex" / "sessions" / "2026" / "09" / "01"
+        root.mkdir(parents=True)
+        child = {
+            "type": "session_meta",
+            "payload": {
+                "id": "a-child",
+                "parent_thread_id": "z-parent",
+                "originator": "Codex Desktop",
+                "source": {"subagent": {"other": "worker"}},
+            },
+        }
+        parent = {
+            "type": "session_meta",
+            "payload": {
+                "id": "z-parent",
+                "originator": "Codex Desktop",
+                "source": "vscode",
+            },
+        }
+        (root / "rollout-a-child.jsonl").write_text(json.dumps(child) + "\n")
+        (root / "rollout-z-parent.jsonl").write_text(json.dumps(parent) + "\n")
+
+        rows = codex.list_sessions(self.home / ".codex")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], "z-parent")
+        self.assertEqual(rows[0]["surface"], "desktop")
+        self.assertEqual(rows[0]["execution_count"], 2)
+        self.assertEqual(
+            {item["id"] for item in rows[0]["executions"]},
+            {"a-child", "z-parent"},
+        )
+
     def test_cursor_cli_lists_store_db(self):
         chats = self.home / ".cursor" / "chats" / "hash1" / "agent-1"
         chats.mkdir(parents=True)

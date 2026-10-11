@@ -91,11 +91,7 @@ def _collect_source_usage(source: Mapping[str, Any]) -> dict[str, Any]:
     if source_id == "claude.code":
         return claude_code.collect_usage(path, source_id)
     if source_id == "codex.home":
-        return {
-            "events": list(codex.iter_usage(path, source_id)),
-            "reconciliation": [],
-            "warnings": [],
-        }
+        return codex.collect_usage(path, source_id)
     return {"events": [], "reconciliation": [], "warnings": []}
 
 
@@ -211,6 +207,7 @@ def aggregate_usage(
     scanned: list[str] = []
     unsupported_notes: list[dict[str, str]] = []
     warnings: list[dict[str, Any]] = []
+    reconciliation: list[dict[str, Any]] = []
     unique_events: dict[str, dict[str, Any]] = {}
 
     period_stores = {
@@ -235,6 +232,12 @@ def aggregate_usage(
         scanned.append(sid)
         batch = _collect_source_usage(source)
         warnings.extend(batch.get("warnings") or [])
+        reconciliation.extend(
+            row
+            for row in (batch.get("reconciliation") or [])
+            if canonical_filter is None
+            or row.get("conversation_key") in canonical_filter
+        )
         for index, event in enumerate(batch.get("events") or []):
             if (
                 canonical_filter is not None
@@ -309,6 +312,10 @@ def aggregate_usage(
     by_week_rows = _serialize_periods(by_week)
     by_month_rows = _serialize_periods(by_month)
     by_year_rows = _serialize_periods(by_year)
+    reconciliation_counts = {
+        status: sum(1 for row in reconciliation if row.get("status") == status)
+        for status in ("matched", "different", "unavailable")
+    }
 
     return {
         "version": 1,
@@ -317,7 +324,12 @@ def aggregate_usage(
         "usage_supported": sorted(WAVE1_USAGE_SUPPORTED),
         "usage_unsupported": unsupported_notes,
         "caveats": CAVEATS,
-        "quality": {"warnings": warnings, "warning_count": len(warnings)},
+        "quality": {
+            "warnings": warnings,
+            "warning_count": len(warnings),
+            "reconciliation": reconciliation_counts,
+        },
+        "reconciliation": reconciliation,
         "prices": {
             "currency": table.get("currency") or "USD",
             "notes": table.get("notes") or "",
