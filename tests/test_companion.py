@@ -189,9 +189,33 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual((result["ahead"], result["behind"]), (1, 0))
         self.assertEqual((result["modified"], result["untracked"]), (1, 1))
         self.assertEqual(result["upstream"], "origin/main")
-        self.assertTrue(result["fresh"])
+        self.assertFalse(result["fresh"])
 
-    def test_fetch_failure_does_not_claim_current_counts(self):
+    def test_inspect_repo_never_fetches_or_runs_mutating_git_commands(self):
+        api = self.api()
+        repo = self.repo("local-only")
+        self.git(repo, "remote", "add", "origin", str(self.root / "missing.git"))
+        self.git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.git(repo, "branch", "--set-upstream-to=origin/main")
+        calls = []
+        original = api.git
+
+        def tracking_git(path, *args, timeout=35):
+            calls.append(args)
+            return original(path, *args, timeout=timeout)
+
+        api.git = tracking_git
+        try:
+            result = api.inspect_repo(str(repo), True)
+        finally:
+            api.git = original
+
+        self.assertEqual((result["ahead"], result["behind"]), (0, 0))
+        self.assertFalse(result["fresh"])
+        forbidden = {"fetch", "pull", "checkout", "switch", "commit", "reset"}
+        self.assertFalse(any(forbidden.intersection(args) for args in calls))
+
+    def test_unreachable_remote_uses_existing_local_tracking_counts(self):
         api = self.api()
         repo = self.repo("offline")
         self.git(repo, "remote", "add", "origin", str(self.root / "missing.git"))
@@ -199,8 +223,8 @@ class CompanionTests(unittest.TestCase):
         self.git(repo, "branch", "--set-upstream-to=origin/main")
         result = api.inspect_repo(str(repo), True)
         self.assertFalse(result["fresh"])
-        self.assertIsNone(result["ahead"])
-        self.assertTrue(result["error"])
+        self.assertEqual((result["ahead"], result["behind"]), (0, 0))
+        self.assertIsNone(result["error"])
 
     def test_request_auth_rejects_other_origins_hosts_and_tokens(self):
         api = self.api()
@@ -284,6 +308,24 @@ class CompanionTests(unittest.TestCase):
         )
         self.assertIsNone(result["error"])
         self.assertNotIn("fetch", calls)
+
+    def test_collect_stats_never_returns_remote_credentials(self):
+        api = self.api()
+        repo = self.repo("credential-remote")
+        self.git(
+            repo,
+            "remote",
+            "add",
+            "origin",
+            "https://user:top-secret@github.com/Owner/Private.git?token=hidden",
+        )
+
+        result = api.collect_stats(str(repo))
+
+        self.assertEqual(result["remotes"][0]["url"], "github.com/owner/private")
+        encoded = json.dumps(result)
+        self.assertNotIn("top-secret", encoded)
+        self.assertNotIn("token=hidden", encoded)
 
     def test_parse_numstat_log_sums_commits_and_skips_binary(self):
         api = self.api()
@@ -473,6 +515,89 @@ class CompanionTests(unittest.TestCase):
         cached = state.cached_stats()
         self.assertEqual(len(cached), 1)
         self.assertEqual(cached[0]["path"], str(repo.resolve()))
+
+    def test_canonical_stats_deduplicate_worktree_history_and_label_primary(self):
+        api = self.api()
+        repo = self.repo("shared")
+        feature = self.root / "shared-feature"
+        self.git(repo, "worktree", "add", "-b", "feature", str(feature))
+        (feature / "feature.txt").write_text("feature\n")
+        self.git(feature, "add", ".")
+        self.git(feature, "commit", "-m", "feature")
+        (repo / "main.txt").write_text("main\n")
+        self.git(repo, "add", ".")
+        self.git(repo, "commit", "-m", "main")
+        state = api.State([self.root], self.root / "settings.json")
+        state.select([str(repo), str(feature)])
+        repository_id = state.workspace_inventory()[0]["repository_id"]
+        state.save_identity_config(
+            {
+                "version": 1,
+                "projects": [
+                    {
+                        "id": "shared",
+                        "name": "Shared",
+                        "repositories": [repository_id],
+                        "primary_workspaces": {repository_id: str(repo)},
+                    }
+                ],
+            }
+        )
+
+        payload = state.canonical_stats(refresh=True)
+
+        self.assertEqual(len(payload["projects"]), 1)
+        project = payload["projects"][0]
+        self.assertEqual(project["project_id"], "shared")
+        self.assertEqual(project["commitCount"], 3)
+        self.assertEqual(len(project["repositories"]), 1)
+        repository = project["repositories"][0]
+        self.assertEqual(repository["commitCount"], 3)
+        self.assertEqual(len(repository["workspaces"]), 2)
+        self.assertEqual(
+            {item["branch"] for item in repository["workspaces"]},
+            {"main", "feature"},
+        )
+        self.assertEqual(repository["primary_workspace_id"], str(repo.resolve()))
+        self.assertEqual(
+            [item["primary"] for item in repository["workspaces"]].count(True), 1
+        )
+        self.assertEqual(project["locCode"], repository["locCode"])
+
+    def test_project_commit_count_keeps_same_sha_from_distinct_repositories(self):
+        api = self.api()
+        first = self.repo("source")
+        second = self.root / "copy"
+        subprocess.run(
+            ["git", "clone", "--no-hardlinks", str(first), str(second)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        state = api.State([self.root], self.root / "settings.json")
+        state.select([str(first), str(second)])
+        inventory = state.workspace_inventory()
+        repository_ids = [item["repository_id"] for item in inventory]
+        self.assertEqual(len(set(repository_ids)), 2)
+        state.save_identity_config(
+            {
+                "version": 1,
+                "projects": [
+                    {
+                        "id": "two-repositories",
+                        "name": "Two repositories",
+                        "repositories": repository_ids,
+                    }
+                ],
+            }
+        )
+
+        project = state.canonical_stats(refresh=True)["projects"][0]
+
+        self.assertEqual(project["commitCount"], 2)
+        self.assertEqual(
+            sum(item["commitCount"] for item in project["repositories"]), 2
+        )
 
     def test_pairing_token_reuses_file_until_rotated(self):
         api = self.api()

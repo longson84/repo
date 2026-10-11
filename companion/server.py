@@ -38,7 +38,13 @@ from project_identity import (  # noqa: E402
     EMPTY_CONFIG,
     ProjectIdentityResolver,
     load_identity_config,
+    normalize_remote_url,
     save_identity_config,
+)
+from commit_stats import (  # noqa: E402
+    aggregate_repository_history,
+    choose_primary_workspace,
+    collect_repository_commits,
 )
 
 ORIGINS = {
@@ -665,15 +671,13 @@ def inspect_repo(path, fetch=True):
             result["github"] = "https://github.com/" + slug.rstrip("/").removesuffix(
                 ".git"
             )
-        if fetch:
-            git(path, "fetch", "--prune", remote)
         ahead, behind = git(
             path, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"
         ).split()
-        result.update(ahead=int(ahead), behind=int(behind), fresh=fetch)
+        result.update(ahead=int(ahead), behind=int(behind), fresh=False)
     except (ValueError, subprocess.TimeoutExpired, OSError):
         result["error"] = (
-            "Git check or fetch failed. Check remote access in your terminal; counts are unknown."
+            "Local Git check failed. Fetch in your terminal if remote-tracking refs are missing."
         )
         result.update(ahead=None, behind=None, fresh=False)
     return result
@@ -845,7 +849,13 @@ def collect_stats(path):
             parts = line.split()
             if len(parts) >= 2 and parts[0] not in seen:
                 seen.add(parts[0])
-                remotes.append({"name": parts[0], "url": parts[1]})
+                remotes.append(
+                    {
+                        "name": parts[0],
+                        "url": normalize_remote_url(parts[1])
+                        or "local-or-unrecognized",
+                    }
+                )
         result["remotes"] = remotes
     else:
         note("remotes")
@@ -975,6 +985,89 @@ def stats_fresh(cached, path):
         computed = computed.replace(tzinfo=timezone.utc)
     age = datetime.now(timezone.utc) - computed
     return age.total_seconds() < STATS_TTL_HOURS * 3600
+
+
+def _sum_period_series(repositories, field):
+    totals = Counter()
+    for repository in repositories:
+        for row in repository.get(field) or []:
+            if isinstance(row, dict) and row.get("period") is not None:
+                totals[str(row["period"])] += int(row.get("commits") or 0)
+    return [
+        {"period": period, "commits": totals[period]} for period in sorted(totals)
+    ]
+
+
+def _aggregate_project_stats(project_id, project_name, repositories):
+    count_fields = ("commitCount", "commits7d", "commits30d", "commits90d")
+    loc_fields = (
+        "workingTreeBytes",
+        "locCode",
+        "locComment",
+        "locBlank",
+        "locLines",
+        "locFiles",
+        "locComplexity",
+    )
+    line_fields = ("linesTotal", "lines7d", "lines30d", "lines90d")
+    result = {
+        "project_id": project_id,
+        "project_name": project_name,
+        "name": project_name,
+        "repositories": repositories,
+        "repository_count": len(repositories),
+        "workspace_count": sum(len(item.get("workspaces") or []) for item in repositories),
+        "identity_warnings": [
+            warning
+            for repository in repositories
+            for warning in (repository.get("identity_warnings") or [])
+        ],
+    }
+    for field in count_fields:
+        values = [item.get(field) for item in repositories]
+        result[field] = sum(int(value or 0) for value in values) if values else 0
+    for field in loc_fields:
+        values = [item.get(field) for item in repositories if item.get(field) is not None]
+        result[field] = sum(int(value) for value in values) if values else None
+    for field in line_fields:
+        bucket = {"additions": 0, "deletions": 0, "net": 0}
+        for repository in repositories:
+            value = repository.get(field) or {}
+            for key in bucket:
+                bucket[key] += int(value.get(key) or 0)
+        result[field] = bucket
+    commits_by_date = Counter()
+    lines_by_date = {}
+    contributors = Counter()
+    for repository in repositories:
+        commits_by_date.update(repository.get("commitsByDate") or {})
+        for day, value in (repository.get("linesByDate") or {}).items():
+            bucket = lines_by_date.setdefault(
+                day, {"additions": 0, "deletions": 0, "net": 0}
+            )
+            for key in bucket:
+                bucket[key] += int(value.get(key) or 0)
+        for contributor in repository.get("topContributors") or []:
+            contributors[str(contributor.get("name") or "Unknown")] += int(
+                contributor.get("commits") or 0
+            )
+    result["commitsByDate"] = dict(commits_by_date)
+    result["linesByDate"] = lines_by_date
+    result["contributorCount"] = len(contributors)
+    result["topContributors"] = [
+        {"name": name, "commits": count}
+        for name, count in contributors.most_common(5)
+    ]
+    for field in ("commitsByDay", "commitsByWeek", "commitsByMonth", "commitsByYear"):
+        result[field] = _sum_period_series(repositories, field)
+    result["weeklyCommits"] = [
+        row["commits"] for row in result["commitsByWeek"][-12:]
+    ]
+    first_values = [item.get("firstCommitAt") for item in repositories if item.get("firstCommitAt")]
+    last_values = [item.get("lastCommitAt") for item in repositories if item.get("lastCommitAt")]
+    result["firstCommitAt"] = min(first_values) if first_values else None
+    result["lastCommitAt"] = max(last_values) if last_values else None
+    return result
 
 
 class State:
@@ -1214,7 +1307,7 @@ class State:
             for path, payload in self.stats_cache.get("repos", {}).items()
             if path in paths
         }
-        if kept != self.stats_cache.get("repos", {}):
+        if kept != self.stats_cache.get("repos", {}) or "projects" in self.stats_cache:
             self.stats_cache = {"version": STATS_CACHE_VERSION, "repos": kept}
             self.save_stats_cache()
         self.prune_scan_cache()
@@ -1233,6 +1326,9 @@ class State:
                 "version": STATS_CACHE_VERSION,
                 "repos": repos if isinstance(repos, dict) else {},
             }
+            projects = raw.get("projects")
+            if isinstance(projects, list):
+                self.stats_cache["projects"] = projects
         except (OSError, json.JSONDecodeError, TypeError):
             self.stats_cache = {"version": STATS_CACHE_VERSION, "repos": {}}
 
@@ -1329,6 +1425,10 @@ class State:
         repos = self.stats_cache.get("repos", {})
         return [repos[path] for path in self.paths if path in repos]
 
+    def cached_projects(self):
+        projects = self.stats_cache.get("projects")
+        return projects if isinstance(projects, list) else []
+
     def stats_for_path(self, value, refresh=False):
         path = str(self.checked(value))
         if path not in self.paths:
@@ -1360,6 +1460,84 @@ class State:
         if dirty:
             self.save_stats_cache()
         return payloads
+
+    def canonical_stats(self, refresh=False):
+        workspace_stats = self.stats_for_all(refresh=refresh)
+        stats_by_path = {item["path"]: item for item in workspace_stats}
+        inventory = self.workspace_inventory()
+        scan_rows = self.scan_cache.get("repos", {})
+        repository_groups = {}
+        for workspace in inventory:
+            repository_groups.setdefault(workspace["repository_id"], []).append(
+                workspace
+            )
+
+        configured_primaries = {}
+        for project in self.identity_config.get("projects") or []:
+            configured_primaries.update(project.get("primary_workspaces") or {})
+
+        repository_rows = {}
+        for repository_id, workspaces in repository_groups.items():
+            paths = [item["workspace_id"] for item in workspaces]
+            primary_path = choose_primary_workspace(
+                workspaces, configured_primaries.get(repository_id)
+            )
+            primary_stats = dict(stats_by_path.get(primary_path) or {})
+            warnings = []
+            commits = collect_repository_commits(paths, warnings=warnings)
+            history = aggregate_repository_history(repository_id, commits)
+            workspace_rows = []
+            for workspace in workspaces:
+                path = workspace["workspace_id"]
+                operational = scan_rows.get(path) or inspect_repo(path, False)
+                workspace_rows.append(
+                    {
+                        **workspace,
+                        **operational,
+                        "path": path,
+                        "name": workspace["workspace_name"],
+                        "primary": path == primary_path,
+                    }
+                )
+            sample = workspaces[0]
+            row = {
+                **primary_stats,
+                **history,
+                "repository_id": repository_id,
+                "repository_name": sample["repository_name"],
+                "name": sample["repository_name"],
+                "path": primary_path,
+                "primary_workspace_id": primary_path,
+                "workspaces": sorted(
+                    workspace_rows, key=lambda item: item["workspace_id"]
+                ),
+                "identity_warnings": warnings,
+            }
+            row.pop("commitShas", None)
+            repository_rows[repository_id] = row
+
+        project_groups = {}
+        for workspace in inventory:
+            key = workspace["project_id"]
+            group = project_groups.setdefault(
+                key, {"name": workspace["project_name"], "repository_ids": []}
+            )
+            if workspace["repository_id"] not in group["repository_ids"]:
+                group["repository_ids"].append(workspace["repository_id"])
+        projects = []
+        for project_id, group in project_groups.items():
+            repositories = [
+                repository_rows[repository_id]
+                for repository_id in group["repository_ids"]
+                if repository_id in repository_rows
+            ]
+            projects.append(
+                _aggregate_project_stats(project_id, group["name"], repositories)
+            )
+        projects.sort(key=lambda item: (item["project_name"].casefold(), item["project_id"]))
+        self.stats_cache["projects"] = projects
+        self.save_stats_cache()
+        return {"repositories": workspace_stats, "projects": projects}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1473,23 +1651,26 @@ class Handler(BaseHTTPRequestHandler):
                 response = {
                     "machine": socket.gethostname(),
                     "repositories": state.cached_stats(),
+                    "projects": state.cached_projects(),
                 }
             elif self.command == "POST" and self.path == "/api/stats":
                 if data.get("all"):
+                    canonical = state.canonical_stats(
+                        refresh=bool(data.get("refresh"))
+                    )
                     response = {
                         "machine": socket.gethostname(),
-                        "repositories": state.stats_for_all(
-                            refresh=bool(data.get("refresh"))
-                        ),
+                        **canonical,
                     }
                 elif "path" in data:
+                    repository = state.stats_for_path(
+                        data["path"], refresh=bool(data.get("refresh"))
+                    )
+                    canonical = state.canonical_stats(refresh=False)
                     response = {
                         "machine": socket.gethostname(),
-                        "repositories": [
-                            state.stats_for_path(
-                                data["path"], refresh=bool(data.get("refresh"))
-                            )
-                        ],
+                        "repositories": [repository],
+                        "projects": canonical["projects"],
                     }
                 else:
                     raise ValueError("Provide path or all=true for stats.")
