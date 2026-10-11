@@ -4,6 +4,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location(
     "repo_companion", pathlib.Path(__file__).parents[1] / "companion" / "server.py"
@@ -54,6 +55,109 @@ class CompanionTests(unittest.TestCase):
         state.select([str(repo)])
         loaded = api.State([self.root], self.root / "settings.json")
         self.assertEqual(loaded.paths, [str(repo.resolve())])
+
+    def test_state_loads_empty_identity_config_and_inventory_keeps_legacy_fields(self):
+        api = self.api()
+        repo = self.repo("identity-repo")
+        state = api.State([self.root], self.root / "settings.json")
+        state.select([str(repo)])
+
+        inventory = state.workspace_inventory()
+
+        self.assertEqual(state.identity_path, self.root / "project-identities.json")
+        self.assertEqual(state.identity_config, {"version": 1, "projects": []})
+        self.assertEqual(len(inventory), 1)
+        self.assertEqual(inventory[0]["path"], str(repo.resolve()))
+        self.assertEqual(inventory[0]["name"], "identity-repo")
+        self.assertEqual(inventory[0]["workspace_id"], str(repo.resolve()))
+        self.assertTrue(inventory[0]["repository_id"].startswith("gitdir:"))
+        self.assertEqual(inventory[0]["identity_confidence"], "git")
+
+    def test_saving_identity_config_preserves_selection_and_invalidates_only_caches(self):
+        api = self.api()
+        repo = self.repo("configured")
+        settings = self.root / "settings.json"
+        state = api.State([self.root], settings)
+        state.select([str(repo)])
+        repository_id = state.workspace_inventory()[0]["repository_id"]
+        state.stats_cache = {"version": 2, "repos": {str(repo): {"old": True}}}
+        state.scan_cache = {
+            "version": 2,
+            "scannedAt": "2026-10-11T00:00:00+00:00",
+            "repos": {str(repo): {"old": True}},
+        }
+        settings_before = settings.read_bytes()
+        payload = {
+            "version": 1,
+            "projects": [
+                {
+                    "id": "configured",
+                    "name": "Configured",
+                    "repositories": [repository_id],
+                }
+            ],
+        }
+
+        with mock.patch.object(api, "git", side_effect=AssertionError("git mutation")):
+            saved = state.save_identity_config(payload)
+
+        self.assertEqual(saved["projects"][0]["id"], "configured")
+        self.assertEqual(settings.read_bytes(), settings_before)
+        self.assertEqual(state.paths, [str(repo.resolve())])
+        self.assertEqual(state.stats_cache, {"version": 2, "repos": {}})
+        self.assertEqual(
+            state.scan_cache, {"version": 2, "scannedAt": None, "repos": {}}
+        )
+        self.assertEqual(state.identity_path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(state.workspace_inventory()[0]["project_id"], "configured")
+
+    def test_version_one_derived_caches_are_rebuilt_without_touching_identity(self):
+        api = self.api()
+        repo = self.repo("migration")
+        settings = self.root / "settings.json"
+        settings.write_text(json.dumps({"paths": [str(repo.resolve())]}) + "\n")
+        identity_path = self.root / "project-identities.json"
+        identity_text = json.dumps(
+            {
+                "version": 1,
+                "projects": [{"id": "migration", "name": "Migration"}],
+            }
+        ) + "\n"
+        identity_path.write_text(identity_text)
+        (self.root / "stats.json").write_text(
+            json.dumps({"version": 1, "repos": {str(repo): {"old": True}}})
+        )
+        (self.root / "scan.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "scannedAt": "2026-10-11T00:00:00+00:00",
+                    "repos": {str(repo): {"old": True}},
+                }
+            )
+        )
+
+        state = api.State([self.root], settings)
+
+        self.assertEqual(state.paths, [str(repo.resolve())])
+        self.assertEqual(state.stats_cache, {"version": 2, "repos": {}})
+        self.assertEqual(
+            state.scan_cache, {"version": 2, "scannedAt": None, "repos": {}}
+        )
+        self.assertEqual(identity_path.read_text(), identity_text)
+
+    def test_discovery_records_include_legacy_and_canonical_identity_fields(self):
+        api = self.api()
+        repo = self.repo("discoverable")
+        state = api.State([self.root], self.root / "settings.json")
+
+        result = state.discover(str(self.root))
+
+        row = next(item for item in result if item["path"] == str(repo.resolve()))
+        self.assertEqual(row["name"], "discoverable")
+        self.assertEqual(row["workspace_id"], str(repo.resolve()))
+        self.assertIn("repository_id", row)
+        self.assertIn("project_id", row)
 
     def test_paths_cannot_escape_approved_roots(self):
         api = self.api()

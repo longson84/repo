@@ -34,6 +34,12 @@ from ai.detect import detect_all, load_detect_cache, save_detect_cache  # noqa: 
 from ai.sessions import list_sessions  # noqa: E402
 from ai.usage import aggregate_usage  # noqa: E402
 from ai.search import search_transcripts  # noqa: E402
+from project_identity import (  # noqa: E402
+    EMPTY_CONFIG,
+    ProjectIdentityResolver,
+    load_identity_config,
+    save_identity_config,
+)
 
 ORIGINS = {
     "https://repo.theana.online",
@@ -41,6 +47,8 @@ ORIGINS = {
     "http://localhost:8766",
 }
 STATS_TTL_HOURS = 24
+STATS_CACHE_VERSION = 2
+SCAN_CACHE_VERSION = 2
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / ".repo-local" / "settings.json"
 DEFAULT_TOKEN_FILE = REPO_ROOT / ".repo-local" / "pairing-token"
@@ -975,20 +983,80 @@ class State:
         self.config = Path(config)
         self.stats_path = self.config.parent / "stats.json"
         self.scan_path = self.config.parent / "scan.json"
+        self.identity_path = self.config.parent / "project-identities.json"
         self.ai_detect_path = self.config.parent / "ai" / "detect.json"
         self.ai_usage_cache_path = self.config.parent / "ai" / "usage.db"
         self.lock = threading.Lock()
         self.ai_cache_lock = threading.Lock()
         self.paths = []
-        self.stats_cache = {"version": 1, "repos": {}}
-        self.scan_cache = {"version": 1, "scannedAt": None, "repos": {}}
+        self.stats_cache = {"version": STATS_CACHE_VERSION, "repos": {}}
+        self.scan_cache = {
+            "version": SCAN_CACHE_VERSION,
+            "scannedAt": None,
+            "repos": {},
+        }
+        self.identity_config = dict(EMPTY_CONFIG)
+        self.identity_resolver = ProjectIdentityResolver(self.identity_config)
+        self.identity_config_warnings = []
         self.ai_detect_cache = None
         if self.config.exists():
             raw = json.loads(self.config.read_text())
             self.paths = [str(self.checked(p)) for p in raw.get("paths", [])]
+        self.reload_identity_config()
         self.load_stats_cache()
         self.load_scan_cache()
         self.load_ai_detect_cache()
+
+    def reload_identity_config(self):
+        try:
+            config = load_identity_config(self.identity_path)
+            warnings = []
+        except ValueError:
+            config = dict(EMPTY_CONFIG)
+            warnings = [{"code": "invalid_identity_config"}]
+        self.identity_config = config
+        self.identity_resolver = ProjectIdentityResolver(config)
+        self.identity_config_warnings = warnings
+        return config
+
+    def save_identity_config(self, payload):
+        saved = save_identity_config(self.identity_path, payload)
+        self.identity_config = saved
+        self.identity_resolver = ProjectIdentityResolver(saved)
+        self.identity_config_warnings = []
+        self.stats_cache = {"version": STATS_CACHE_VERSION, "repos": {}}
+        self.scan_cache = {
+            "version": SCAN_CACHE_VERSION,
+            "scannedAt": None,
+            "repos": {},
+        }
+        self.save_stats_cache()
+        self.save_scan_cache()
+        return saved
+
+    def decorate_workspace(self, item):
+        path = str(item.get("path") or "")
+        identity = self.identity_resolver.resolve(path)
+        return {**item, **identity, "path": identity["workspace_id"], "name": item.get("name") or identity["workspace_name"]}
+
+    def workspace_inventory(self):
+        return [
+            self.decorate_workspace({"path": path, "name": Path(path).name})
+            for path in self.paths
+        ]
+
+    def identity_payload(self):
+        warnings = list(self.identity_config_warnings)
+        seen = {(item.get("code"), item.get("workspace_id")) for item in warnings}
+        for workspace in self.workspace_inventory():
+            for code in workspace.get("identity_warnings") or []:
+                key = (code, workspace["workspace_id"])
+                if key not in seen:
+                    warnings.append(
+                        {"code": code, "workspace_id": workspace["workspace_id"]}
+                    )
+                    seen.add(key)
+        return {**self.identity_config, "warnings": warnings}
 
     def load_ai_detect_cache(self):
         self.ai_detect_cache = load_detect_cache(self.ai_detect_path)
@@ -1105,7 +1173,11 @@ class State:
         for directory, folders, files in os.walk(root, followlinks=False):
             path = Path(directory)
             if ".git" in folders or ".git" in files:
-                found.append({"name": path.name, "path": str(path.resolve())})
+                found.append(
+                    self.decorate_workspace(
+                        {"name": path.name, "path": str(path.resolve())}
+                    )
+                )
                 folders[:] = []
             else:
                 folders[:] = [
@@ -1143,23 +1215,26 @@ class State:
             if path in paths
         }
         if kept != self.stats_cache.get("repos", {}):
-            self.stats_cache = {"version": 1, "repos": kept}
+            self.stats_cache = {"version": STATS_CACHE_VERSION, "repos": kept}
             self.save_stats_cache()
         self.prune_scan_cache()
 
     def load_stats_cache(self):
         if not self.stats_path.exists():
-            self.stats_cache = {"version": 1, "repos": {}}
+            self.stats_cache = {"version": STATS_CACHE_VERSION, "repos": {}}
             return
         try:
             raw = json.loads(self.stats_path.read_text())
+            if not isinstance(raw, dict) or raw.get("version") != STATS_CACHE_VERSION:
+                self.stats_cache = {"version": STATS_CACHE_VERSION, "repos": {}}
+                return
             repos = raw.get("repos", {}) if isinstance(raw, dict) else {}
             self.stats_cache = {
-                "version": 1,
+                "version": STATS_CACHE_VERSION,
                 "repos": repos if isinstance(repos, dict) else {},
             }
         except (OSError, json.JSONDecodeError, TypeError):
-            self.stats_cache = {"version": 1, "repos": {}}
+            self.stats_cache = {"version": STATS_CACHE_VERSION, "repos": {}}
 
     def save_stats_cache(self):
         self.stats_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1170,19 +1245,34 @@ class State:
 
     def load_scan_cache(self):
         if not self.scan_path.exists():
-            self.scan_cache = {"version": 1, "scannedAt": None, "repos": {}}
+            self.scan_cache = {
+                "version": SCAN_CACHE_VERSION,
+                "scannedAt": None,
+                "repos": {},
+            }
             return
         try:
             raw = json.loads(self.scan_path.read_text())
+            if not isinstance(raw, dict) or raw.get("version") != SCAN_CACHE_VERSION:
+                self.scan_cache = {
+                    "version": SCAN_CACHE_VERSION,
+                    "scannedAt": None,
+                    "repos": {},
+                }
+                return
             repos = raw.get("repos", {}) if isinstance(raw, dict) else {}
             self.scan_cache = {
-                "version": 1,
+                "version": SCAN_CACHE_VERSION,
                 "scannedAt": raw.get("scannedAt") if isinstance(raw, dict) else None,
                 "repos": repos if isinstance(repos, dict) else {},
             }
             self.prune_scan_cache(save=False)
         except (OSError, json.JSONDecodeError, TypeError):
-            self.scan_cache = {"version": 1, "scannedAt": None, "repos": {}}
+            self.scan_cache = {
+                "version": SCAN_CACHE_VERSION,
+                "scannedAt": None,
+                "repos": {},
+            }
 
     def save_scan_cache(self):
         self.scan_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1198,7 +1288,11 @@ class State:
             if path in self.paths
         }
         scanned_at = self.scan_cache.get("scannedAt") if kept else None
-        next_cache = {"version": 1, "scannedAt": scanned_at, "repos": kept}
+        next_cache = {
+            "version": SCAN_CACHE_VERSION,
+            "scannedAt": scanned_at,
+            "repos": kept,
+        }
         if next_cache != self.scan_cache:
             self.scan_cache = next_cache
             if save:
@@ -1214,11 +1308,11 @@ class State:
             except (ValueError, OSError):
                 continue
             if path in self.paths:
-                stored = dict(item)
+                stored = self.decorate_workspace(dict(item))
                 stored["path"] = path
                 repos[path] = stored
         self.scan_cache = {
-            "version": 1,
+            "version": SCAN_CACHE_VERSION,
             "scannedAt": scanned_at,
             "repos": repos,
         }
@@ -1344,17 +1438,30 @@ class Handler(BaseHTTPRequestHandler):
                     "machine": socket.gethostname(),
                     "roots": [str(p) for p in state.roots],
                     "paths": state.paths,
+                    "workspaces": state.workspace_inventory(),
                     **state.last_scan_payload(),
                 }
+            elif self.command == "GET" and self.path == "/api/project-identities":
+                response = state.identity_payload()
+            elif self.command == "POST" and self.path == "/api/project-identities":
+                state.save_identity_config(data)
+                response = state.identity_payload()
             elif self.command == "POST" and self.path == "/api/discover":
                 response = {"repositories": state.discover(data["root"])}
             elif self.command == "POST" and self.path == "/api/selection":
                 state.select(data["paths"])
-                response = {"paths": state.paths, **state.last_scan_payload()}
+                response = {
+                    "paths": state.paths,
+                    "workspaces": state.workspace_inventory(),
+                    **state.last_scan_payload(),
+                }
             elif self.command == "POST" and self.path == "/api/scan":
                 paths = [str(state.checked(p)) for p in state.paths]
                 with ThreadPoolExecutor(max_workers=4) as pool:
-                    repos = list(pool.map(inspect_repo, paths))
+                    repos = [
+                        state.decorate_workspace(item)
+                        for item in pool.map(inspect_repo, paths)
+                    ]
                 scanned_at = datetime.now(timezone.utc).isoformat()
                 state.remember_scan(repos, scanned_at)
                 response = {

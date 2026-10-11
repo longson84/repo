@@ -85,6 +85,50 @@ class AiApiTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertIn("error", data)
 
+    def test_project_identity_config_api_round_trip_and_validation(self):
+        status, empty = self.request("GET", "/api/project-identities")
+        self.assertEqual(status, 200)
+        self.assertEqual(empty["version"], 1)
+        self.assertEqual(empty["projects"], [])
+        self.assertEqual(empty["warnings"], [])
+
+        payload = {
+            "version": 1,
+            "projects": [
+                {
+                    "id": "companyq",
+                    "name": "CompanyQ",
+                    "workspace_aliases": [str(self.root / "OldCompanyQ")],
+                }
+            ],
+        }
+        status, saved = self.request("POST", "/api/project-identities", payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["projects"][0]["id"], "companyq")
+        self.assertEqual(saved["warnings"], [])
+        self.assertEqual(self.config.read_text(), json.dumps({"paths": []}) + "\n")
+
+        status, loaded = self.request("GET", "/api/project-identities")
+        self.assertEqual(status, 200)
+        self.assertEqual(loaded["projects"], saved["projects"])
+
+        invalid = {
+            "version": 1,
+            "projects": [
+                {"id": "one", "name": "One", "workspace_aliases": ["/tmp/x"]},
+                {"id": "two", "name": "Two", "workspace_aliases": ["/tmp/x"]},
+            ],
+        }
+        status, error = self.request("POST", "/api/project-identities", invalid)
+        self.assertEqual(status, 400)
+        self.assertIn("alias", error["error"])
+
+    def test_status_keeps_paths_and_adds_canonical_workspaces(self):
+        status, payload = self.request("GET", "/api/status")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["paths"], [])
+        self.assertEqual(payload["workspaces"], [])
+
     def test_sessions_lists_wave1(self):
         status, data = self.request(
             "POST",
