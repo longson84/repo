@@ -1,6 +1,6 @@
 # Repo
 
-Local dashboard for the Git repositories on **this** machine: sync status (ahead / behind / dirty) and commit stats. Everything runs on loopback; nothing is uploaded.
+Local dashboard for explicitly selected `github.com` repositories on **this** machine: sync status (ahead / behind / dirty), commit stats, and repository-scoped AI activity. Everything runs on loopback; nothing is uploaded.
 
 Requires Python 3.9+ and Git. No Python packages to install.
 
@@ -28,20 +28,26 @@ python3 companion/server.py --root ~/Projects --root /another/folder --ui
 
 ## Use
 
-1. **Manage tracked repos** — discover under an approved folder, choose tracked workspaces, and group repositories into logical projects.
+1. **Manage tracked repos** — discover eligible GitHub workspaces under an approved folder, explicitly select them, and group their canonical repositories into logical projects.
 2. **Scan** — refresh sync status and portfolio stats for tracked repos.
 3. **Stats** — combined activity chart and repo comparison board.
-4. **AI** (`#/ai`) — detect local AI discussion stores (Antigravity, Claude, Codex, Cursor).
+4. **AI** (`#/ai`) — detect local AI store availability, then report conversations, transcript matches, and tokens only for selected GitHub repositories.
 5. Open a repo row for detail (volume, diff churn, commit timeline).
 6. **Languages** (`#/languages`) — sortable repos × languages matrix (code lines via [`scc`](https://github.com/boyter/scc)). Values in thousands (`1,230k`).
 
 Requires `scc` on `PATH` (`brew install scc`).
 
-Discovery walks up to three directory levels and skips hidden folders, dependencies, and build output. Deeper repos can be added by full path.
+Discovery walks up to three directory levels and skips hidden folders, dependencies, and build output. A workspace is eligible only when any configured fetch or push remote normalizes to `github.com/<owner>/<repository>`. A GitHub `origin` wins; otherwise the first GitHub remote by name is used. Deeper eligible repositories can be submitted by full path.
+
+Selection is explicit. Finding a repository does not track it. Selecting one clone or linked worktree authorizes the canonical GitHub repository, so AI activity recorded from another live clone or worktree of that same repository is included.
 
 ### AI accounting semantics
 
-The AI view distinguishes physical stores and transcript representations from logical conversations and executions. Child/subagent executions contribute token usage but do not inflate the conversation count. Token totals count unique provider/model calls: repeated streaming snapshots and copied provider message IDs are deduplicated.
+**Detect** reports whether known local stores exist, their paths and sizes, and supported capabilities. It intentionally does not show global conversation, execution, or representation estimates because those stores may contain activity outside the tracked repository scope.
+
+Sessions, Search, and Tokens all use the same **Selected GitHub repositories** allowlist as repository status and Stats. Records without a live workspace identity, records from unselected repositories, local-only Git work, non-GitHub work, missing paths, and ordinary folders are excluded. The Tokens report shows the excluded event count and excluded token bucket so the reduced total is explicit.
+
+The AI view distinguishes physical transcript representations from logical conversations and executions. Child/subagent executions contribute token usage but do not inflate the conversation count. Token totals count unique provider/model calls: repeated streaming snapshots and copied provider message IDs are deduplicated.
 
 The Tokens report can group usage by day, week, month, or year. Its project view expands each project into provider/model rows; its model view expands each provider/model into projects. Both show input, cached input, output, cache-write, total token volume, share, and unique-call counts. Usage without project attribution appears as `Unattributed`.
 
@@ -54,10 +60,10 @@ The first usage scan parses local vendor files and can take longer. Later scans 
 Reports use three levels instead of treating every folder name as a separate project:
 
 1. **Project** — the product or body of work shown in totals.
-2. **Repository** — a Git repository, identified by its credential-free normalized remote or Git common directory.
+2. **Repository** — an eligible canonical `remote:github.com/<owner>/<repository>` identity.
 3. **Workspace** — a checkout, clone, or worktree path that preserves where the activity occurred.
 
-Resolution is deterministic. A live Git repository is resolved first; explicit repository membership chooses its configured project, otherwise that repository becomes its own project. When no live repository can be read, an exact normalized workspace alias is tried, followed by an unambiguous case-insensitive match. An existing non-Git directory becomes a path-backed project. Missing, ambiguous, or conflicting evidence stays `Unattributed` and produces a stable warning code; folder suffixes are never guessed.
+Resolution is deterministic. The companion inspects every remote's fetch and push URLs, prefers a GitHub `origin`, then chooses the first GitHub remote by remote name. Explicit repository membership chooses its configured logical project; otherwise that canonical GitHub repository is its own project. Folder names and prompt-derived paths are never treated as repository identity.
 
 Machine-local grouping rules live in `.repo-local/project-identities.json`. For example:
 
@@ -81,14 +87,25 @@ Machine-local grouping rules live in `.repo-local/project-identities.json`. For 
 }
 ```
 
-The companion validates this file and writes it with owner-only permissions. Changing a rule invalidates derived scan/stat caches. AI usage events keep their recorded workspace path in the rebuildable cache, so aliases are reapplied immediately without reparsing transcript content. In **Stats**, expand project → repository → workspace to inspect Git attribution. In **AI → Tokens**, expand project/model rows and open **Attribution quality** to inspect configured, path-based, and unresolved workspace evidence.
+The companion validates this file and writes it with owner-only permissions. Changing a rule invalidates derived scan/stat caches. AI usage events keep their recorded workspace path in the rebuildable cache, so project rules are reapplied without reparsing transcript content. In **Stats**, expand project → repository → workspace to inspect Git attribution. In **AI → Tokens**, expand project/model rows and open **Attribution quality** to inspect configured and unresolved workspace evidence.
+
+### GitHub-only migration
+
+On startup and before tracked-data requests, the companion reconciles selection and grouping state. This cleanup is intentionally destructive and idempotent:
+
+- missing, inaccessible, ordinary-directory, local-only, and non-GitHub paths are removed from `settings.json`;
+- repository memberships outside the selected canonical GitHub set are removed;
+- stale primary-workspace mappings, aliases, and projects left empty are deleted;
+- scan, Stats, and AI-derived caches are invalidated when reconciliation changes configuration.
+
+A malformed `project-identities.json` is never overwritten automatically; fix it explicitly. Pruned grouping is not restored if a repository is selected again later. If every selection is removed, all reports remain empty—there is no fallback to unscoped local activity. Recover by opening **Manage tracked repos** and selecting a repository with a `github.com` remote.
 
 ### Manage project grouping
 
 Open **Manage tracked repos** to edit grouping without touching the JSON file:
 
 - The **Group** checkbox selects a canonical repository for a bulk project action. Multiple clones or worktrees of the same repository select together.
-- The **Tracked** switch controls whether that workspace appears in local reports. Grouping does not change tracking, and tracking does not change grouping.
+- The **Tracked** switch controls whether the canonical GitHub repository appears in local reports. Selecting one clone or worktree includes every live workspace with the same canonical identity in AI reports.
 - **Group selected** can assign repositories to an existing project, create a new project, or make them **Standalone** again.
 - Configured project cards support rename, ungroup, and delete. Rename preserves the stable project ID. Delete is disabled when historical workspace aliases or primary-workspace mappings must be retained. Ungroup is also disabled when it would discard a primary-workspace mapping; remove that mapping from the local identity file first.
 
@@ -106,7 +123,7 @@ All of this is gitignored under `.repo-local/`:
 
 | File | Purpose |
 |------|---------|
-| `settings.json` | Tracked repo paths |
+| `settings.json` | Selected eligible GitHub workspace paths |
 | `scan.json` | Last Scan snapshot (survives browser refresh) |
 | `stats.json` | Stats cache (reuse ~24h while `HEAD` unchanged) |
 | `project-identities.json` | Validated project/repository/workspace grouping rules (mode `0600`) |
