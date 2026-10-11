@@ -15,7 +15,7 @@ from ..identity import conversation_key, execution_key
 
 
 PARSER_NAME = "antigravity-sqlite-protobuf"
-PARSER_VERSION = 2
+PARSER_VERSION = 3
 
 USER_REQUEST_RE = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.S | re.I)
 
@@ -337,10 +337,10 @@ def list_sessions(root: Path, source_id: str, surface: str) -> list[dict]:
     return list(by_id.values())
 
 
-def _project_map(root: Path) -> dict[str, str]:
-    """Map conversation_id → project name from summaries (and light transcript fallback)."""
+def _workspace_map(root: Path) -> dict[str, dict[str, Optional[str]]]:
+    """Map conversation IDs to source-recorded workspace evidence."""
     root = Path(root)
-    mapping: dict[str, str] = {}
+    mapping: dict[str, dict[str, Optional[str]]] = {}
     summaries_db = root / "conversation_summaries.db"
     if summaries_db.is_file():
         try:
@@ -355,9 +355,8 @@ def _project_map(root: Path) -> dict[str, str]:
             if not cid:
                 continue
             cwd = _workspace_from_uris(workspace_uris)
-            name = project_name(cwd)
-            if name:
-                mapping[str(cid)] = name
+            if cwd:
+                mapping[str(cid)] = {"cwd": cwd, "project": project_name(cwd)}
     return mapping
 
 
@@ -366,7 +365,7 @@ def usage_files(root: Path, source_id: str, surface: str) -> list[dict[str, Any]
     conv_dir = root / "conversations"
     if not conv_dir.is_dir():
         return []
-    projects = _project_map(root)
+    workspaces = _workspace_map(root)
     try:
         dbs = sorted(conv_dir.glob("*.db"))
     except OSError:
@@ -408,7 +407,8 @@ def usage_files(root: Path, source_id: str, surface: str) -> list[dict[str, Any]
             "parser_version": PARSER_VERSION,
             "dependencies": dependencies,
             "surface": surface,
-            "project": projects.get(db.stem),
+            "project": (workspaces.get(db.stem) or {}).get("project"),
+            "cwd": (workspaces.get(db.stem) or {}).get("cwd"),
             "root": root,
         }
         descriptor["parse"] = lambda item=descriptor: parse_usage_file(item)
@@ -425,7 +425,8 @@ def parse_usage_file(descriptor: Mapping[str, Any]) -> dict[str, Any]:
     warnings: list[dict[str, Any]] = []
     session_id = db.stem
     project = descriptor.get("project")
-    if project is None:
+    cwd = descriptor.get("cwd")
+    if project is None or cwd is None:
         transcript = (
             root
             / "brain"
@@ -434,8 +435,9 @@ def parse_usage_file(descriptor: Mapping[str, Any]) -> dict[str, Any]:
             / "logs"
             / "transcript_full.jsonl"
         )
-        _, cwd = _preview_and_cwd_from_transcript(transcript)
-        project = project_name(cwd) or "unknown"
+        _, transcript_cwd = _preview_and_cwd_from_transcript(transcript)
+        cwd = cwd or transcript_cwd
+        project = project or project_name(cwd) or "unknown"
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     except sqlite3.Error:
@@ -479,6 +481,7 @@ def parse_usage_file(descriptor: Mapping[str, Any]) -> dict[str, Any]:
             "model": parsed["model"],
             "model_id": parsed.get("model_id"),
             "project": project,
+            "cwd": cwd,
             "date": parsed.get("date") or fallback_date,
             "input_tokens": parsed["input_tokens"],
             "cached_tokens": parsed["cached_tokens"],

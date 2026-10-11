@@ -34,6 +34,13 @@ class UsageCacheTests(unittest.TestCase):
             "cached_tokens": 0,
             "output_tokens": 0,
             "cache_write_tokens": 0,
+            "cwd": "/Users/example/Projects/source-evidence",
+            "workspace_id": "/derived/workspace",
+            "repository_id": "remote:example.test/derived/repository",
+            "project_id": "derived-project",
+            "project_name": "Derived Project",
+            "identity_confidence": "configured",
+            "remote_url": "https://user:secret@example.test/repository.git",
         }
         if secret is not None:
             event["transcript"] = secret
@@ -178,6 +185,31 @@ class UsageCacheTests(unittest.TestCase):
                 cache, [self.descriptor(source, lambda: self.batch(1, secret))]
             )
             self.assertNotIn(secret.encode(), cache.read_bytes())
+
+    def test_cache_keeps_cwd_but_discards_configuration_derived_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "usage"
+            source.write_text("vendor data")
+            cache = root / "usage.db"
+
+            result = refresh_usage_cache(
+                cache, [self.descriptor(source, lambda: self.batch())]
+            )
+
+            event = result["events"][0]
+            self.assertEqual(event["cwd"], "/Users/example/Projects/source-evidence")
+            for field in (
+                "workspace_id",
+                "repository_id",
+                "project_id",
+                "project_name",
+                "identity_confidence",
+                "remote_url",
+            ):
+                self.assertNotIn(field, event)
+                self.assertNotIn(field.encode(), cache.read_bytes())
+            self.assertNotIn(b"user:secret", cache.read_bytes())
             con = sqlite3.connect(cache)
             payload = con.execute("SELECT payload_json FROM events").fetchone()[0]
             con.close()

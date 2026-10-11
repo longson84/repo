@@ -115,6 +115,19 @@ class AntigravityUsageTests(unittest.TestCase):
             con.execute("INSERT INTO steps VALUES (7, 15, ?)", (meta,))
             con.commit()
             con.close()
+            summaries = sqlite3.connect(root / "conversation_summaries.db")
+            summaries.execute(
+                "CREATE TABLE conversation_summaries (conversation_id TEXT, workspace_uris TEXT)"
+            )
+            summaries.execute(
+                "INSERT INTO conversation_summaries VALUES (?, ?)",
+                (
+                    "session-1",
+                    json.dumps(["file:///Users/example/Projects/ExactWorkspace"]),
+                ),
+            )
+            summaries.commit()
+            summaries.close()
 
             result = antigravity.collect_usage(root, "antigravity.app", "app")
 
@@ -123,10 +136,40 @@ class AntigravityUsageTests(unittest.TestCase):
             self.assertEqual(
                 result["events"][0]["event_key"], "antigravity:session-1:step:7"
             )
+            self.assertEqual(
+                result["events"][0]["cwd"],
+                "/Users/example/Projects/ExactWorkspace",
+            )
             self.assertEqual(result["warnings"][0]["code"], "output_invariant_mismatch")
 
 
 class ClaudeCodexUsageTests(unittest.TestCase):
+    def test_claude_usage_retains_recorded_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            path = root / "projects" / "encoded-name" / "session.jsonl"
+            path.parent.mkdir(parents=True)
+            cwd = "/Users/example/Projects/Exact-Claude-Workspace"
+            path.write_text(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "cwd": cwd,
+                        "timestamp": "2026-03-01T12:00:00Z",
+                        "message": {
+                            "id": "cwd-message",
+                            "model": "claude-sonnet-4-6",
+                            "usage": {"input_tokens": 2, "output_tokens": 1},
+                        },
+                    }
+                )
+                + "\n"
+            )
+
+            event = claude_code.collect_usage(root)["events"][0]
+
+            self.assertEqual(event["cwd"], cwd)
+
     def test_claude_message_usage(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -337,6 +380,7 @@ class ClaudeCodexUsageTests(unittest.TestCase):
             self.assertEqual(events[1]["cached_tokens"], 800)
             self.assertEqual(events[1]["output_tokens"], 30)
             self.assertEqual(events[0]["model"], "gpt-5.5")
+            self.assertEqual(events[0]["cwd"], "/Users/x/Projects/demo")
             total_in = sum(e["input_tokens"] for e in events)
             self.assertEqual(total_in, 1300)
 
