@@ -190,16 +190,36 @@ class CompanionTests(unittest.TestCase):
     def test_discovery_and_selection_are_persistent(self):
         api = self.api()
         repo = self.github_repo("chosen")
-        self.repo("excluded")
+        local = self.repo("excluded")
+        gitlab = self.repo("gitlab")
+        self.git(
+            gitlab,
+            "remote",
+            "add",
+            "origin",
+            "https://gitlab.com/example/gitlab.git",
+        )
+        linked = self.root / "chosen-linked"
+        self.git(repo, "worktree", "add", "-b", "linked", str(linked))
+        ordinary = self.root / "ordinary"
+        ordinary.mkdir()
         state = api.State([self.root], self.root / "settings.json")
-        self.assertEqual(len(state.discover(str(self.root))), 2)
-        state.select([str(repo)])
+        discovered = state.discover(str(self.root))
+        self.assertEqual(
+            {item["path"] for item in discovered["repositories"]},
+            {str(repo.resolve()), str(linked.resolve())},
+        )
+        self.assertEqual(discovered["excluded_candidate_count"], 2)
+        result = state.select(
+            [str(repo), str(linked), str(local), str(gitlab), str(ordinary)]
+        )
+        self.assertEqual(result["removed_paths"], 3)
         loaded = api.State([self.root], self.root / "settings.json")
-        self.assertEqual(loaded.paths, [str(repo.resolve())])
+        self.assertEqual(loaded.paths, [str(repo.resolve()), str(linked.resolve())])
 
     def test_state_loads_empty_identity_config_and_inventory_keeps_legacy_fields(self):
         api = self.api()
-        repo = self.repo("identity-repo")
+        repo = self.github_repo("identity-repo")
         state = api.State([self.root], self.root / "settings.json")
         state.select([str(repo)])
 
@@ -211,14 +231,17 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual(inventory[0]["path"], str(repo.resolve()))
         self.assertEqual(inventory[0]["name"], "identity-repo")
         self.assertEqual(inventory[0]["workspace_id"], str(repo.resolve()))
-        self.assertTrue(inventory[0]["repository_id"].startswith("gitdir:"))
+        self.assertEqual(
+            inventory[0]["repository_id"],
+            "remote:github.com/example/identity-repo",
+        )
         self.assertEqual(inventory[0]["identity_confidence"], "git")
 
     def test_saving_identity_config_preserves_selection_and_invalidates_only_caches(
         self,
     ):
         api = self.api()
-        repo = self.repo("configured")
+        repo = self.github_repo("configured")
         settings = self.root / "settings.json"
         state = api.State([self.root], settings)
         state.select([str(repo)])
@@ -353,12 +376,16 @@ class CompanionTests(unittest.TestCase):
 
     def test_discovery_records_include_legacy_and_canonical_identity_fields(self):
         api = self.api()
-        repo = self.repo("discoverable")
+        repo = self.github_repo("discoverable")
         state = api.State([self.root], self.root / "settings.json")
 
         result = state.discover(str(self.root))
 
-        row = next(item for item in result if item["path"] == str(repo.resolve()))
+        row = next(
+            item
+            for item in result["repositories"]
+            if item["path"] == str(repo.resolve())
+        )
         self.assertEqual(row["name"], "discoverable")
         self.assertEqual(row["workspace_id"], str(repo.resolve()))
         self.assertIn("repository_id", row)
@@ -701,7 +728,7 @@ class CompanionTests(unittest.TestCase):
 
     def test_stats_cache_hit_head_invalidation_and_refresh(self):
         api = self.api()
-        repo = self.repo("cached")
+        repo = self.github_repo("cached")
         state = api.State([self.root], self.root / "settings.json")
         state.select([str(repo)])
         first = state.stats_for_path(str(repo))
@@ -723,7 +750,7 @@ class CompanionTests(unittest.TestCase):
 
     def test_canonical_stats_deduplicate_worktree_history_and_label_primary(self):
         api = self.api()
-        repo = self.repo("shared")
+        repo = self.github_repo("shared")
         feature = self.root / "shared-feature"
         self.git(repo, "worktree", "add", "-b", "feature", str(feature))
         (feature / "feature.txt").write_text("feature\n")
@@ -771,13 +798,16 @@ class CompanionTests(unittest.TestCase):
 
     def test_project_commit_count_keeps_same_sha_from_distinct_repositories(self):
         api = self.api()
-        first = self.repo("source")
+        first = self.github_repo("source")
         second = self.root / "copy"
         subprocess.run(
             ["git", "clone", "--no-hardlinks", str(first), str(second)],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+        )
+        self.git(
+            second, "remote", "set-url", "origin", "https://github.com/example/copy.git"
         )
         state = api.State([self.root], self.root / "settings.json")
         state.select([str(first), str(second)])

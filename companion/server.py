@@ -1174,6 +1174,13 @@ class State:
         return set(self._selected_repository_ids)
 
     def reconcile_tracking(self, candidate_paths=None):
+        previous_fingerprint = self.identity_resolver.fingerprint()
+        previous_warnings = list(self.identity_config_warnings)
+        self.reload_identity_config()
+        identity_reloaded = (
+            self.identity_resolver.fingerprint() != previous_fingerprint
+            or self.identity_config_warnings != previous_warnings
+        )
         candidates = self.paths if candidate_paths is None else candidate_paths
         candidates = list(candidates or [])
         retained_paths = []
@@ -1225,14 +1232,19 @@ class State:
                 saved = save_identity_config(self.identity_path, pruned)
                 self.install_identity_config(saved)
 
-        if selection_changed or identity_changed:
+        if selection_changed or identity_changed or identity_reloaded:
             self.invalidate_identity_caches()
         result = {
             "removed_paths": len(candidates) - len(retained_paths),
             **identity_counts,
             "invalid_identity_config": invalid_identity_config,
         }
-        self.last_reconciliation = result
+        if (
+            candidate_paths is not None
+            or invalid_identity_config
+            or any(result[key] for key in self.RECONCILIATION_COUNT_KEYS)
+        ):
+            self.last_reconciliation = result
         return dict(result)
 
     def save_identity_config(self, payload, expected_fingerprint=None):
@@ -1408,14 +1420,19 @@ class State:
     def discover(self, value):
         root = self.checked(value)
         found = []
+        excluded_candidate_count = 0
         for directory, folders, files in os.walk(root, followlinks=False):
             path = Path(directory)
             if ".git" in folders or ".git" in files:
-                found.append(
-                    self.decorate_workspace(
-                        {"name": path.name, "path": str(path.resolve())}
+                repository_id, _ = resolve_live_repository(str(path.resolve()))
+                if is_github_repository_id(repository_id):
+                    found.append(
+                        self.decorate_workspace(
+                            {"name": path.name, "path": str(path.resolve())}
+                        )
                     )
-                )
+                else:
+                    excluded_candidate_count += 1
                 folders[:] = []
             else:
                 folders[:] = [
@@ -1427,35 +1444,16 @@ class State:
                 ]
             if len(found) > 1000:
                 raise ValueError("Too many repositories. Choose a smaller folder.")
-        return sorted(found, key=lambda r: r["path"])
+        return {
+            "repositories": sorted(found, key=lambda row: row["path"]),
+            "excluded_candidate_count": excluded_candidate_count,
+        }
 
     def select(self, values):
         if not isinstance(values, list) or len(values) > 100:
             raise ValueError("Select at most 100 repositories.")
-        paths = []
-        for value in values:
-            path = self.checked(value)
-            if not (path / ".git").exists() or git(
-                path, "rev-parse", "--show-toplevel"
-            ) != str(path):
-                raise ValueError("Select a Git repository root.")
-            if str(path) not in paths:
-                paths.append(str(path))
-        self.config.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.config.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"paths": paths}, indent=2) + "\n")
-        temporary.chmod(0o600)
-        temporary.replace(self.config)
-        self.paths = paths
-        kept = {
-            path: payload
-            for path, payload in self.stats_cache.get("repos", {}).items()
-            if path in paths
-        }
-        if kept != self.stats_cache.get("repos", {}) or "projects" in self.stats_cache:
-            self.stats_cache = {"version": STATS_CACHE_VERSION, "repos": kept}
-            self.save_stats_cache()
-        self.prune_scan_cache()
+        candidates = [str(self._candidate_path(value)) for value in values]
+        return self.reconcile_tracking(candidates)
 
     def load_stats_cache(self):
         if not self.stats_path.exists():
@@ -1758,12 +1756,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(data, dict):
                     raise ValueError("Expected an object.")
             state = self.server.state
+            state.reconcile_tracking()
             if self.command == "GET" and self.path == "/api/status":
                 response = {
                     "machine": socket.gethostname(),
                     "roots": [str(p) for p in state.roots],
                     "paths": state.paths,
                     "workspaces": state.workspace_inventory(),
+                    "reconciliation": state.last_reconciliation,
                     **state.last_scan_payload(),
                 }
             elif self.command == "GET" and self.path == "/api/project-identities":
@@ -1773,14 +1773,16 @@ class Handler(BaseHTTPRequestHandler):
                     {"version": data.get("version"), "projects": data.get("projects")},
                     expected_fingerprint=data.get("expected_fingerprint"),
                 )
+                state.reconcile_tracking()
                 response = state.identity_payload()
             elif self.command == "POST" and self.path == "/api/discover":
-                response = {"repositories": state.discover(data["root"])}
+                response = state.discover(data["root"])
             elif self.command == "POST" and self.path == "/api/selection":
-                state.select(data["paths"])
+                reconciliation = state.select(data["paths"])
                 response = {
                     "paths": state.paths,
                     "workspaces": state.workspace_inventory(),
+                    "reconciliation": reconciliation,
                     **state.last_scan_payload(),
                 }
             elif self.command == "POST" and self.path == "/api/scan":

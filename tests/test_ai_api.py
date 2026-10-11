@@ -69,6 +69,30 @@ class AiApiTests(unittest.TestCase):
         conn.close()
         return response.status, data
 
+    def select_github_workspace(self, name="proj"):
+        workspace = self.root / name
+        workspace.mkdir(exist_ok=True)
+        subprocess.run(
+            ["git", "-C", str(workspace), "init", "-b", "main"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(workspace),
+                "remote",
+                "add",
+                "origin",
+                f"https://github.com/example/{name}.git",
+            ],
+            check=True,
+        )
+        self.server.state.select([str(workspace)])
+        return workspace, self.server.state.workspace_inventory()[0]["repository_id"]
+
     def test_get_detect_empty_then_post(self):
         status, data = self.request("GET", "/api/ai/detect")
         self.assertEqual(status, 200)
@@ -87,6 +111,8 @@ class AiApiTests(unittest.TestCase):
         self.assertIn("error", data)
 
     def test_project_identity_config_api_round_trip_and_validation(self):
+        workspace, repository_id = self.select_github_workspace()
+        settings_before = self.config.read_bytes()
         status, empty = self.request("GET", "/api/project-identities")
         self.assertEqual(status, 200)
         self.assertEqual(empty["version"], 1)
@@ -99,7 +125,8 @@ class AiApiTests(unittest.TestCase):
                 {
                     "id": "companyq",
                     "name": "CompanyQ",
-                    "workspace_aliases": [str(self.root / "OldCompanyQ")],
+                    "repositories": [repository_id],
+                    "workspace_aliases": [str(workspace)],
                 }
             ],
         }
@@ -107,7 +134,7 @@ class AiApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(saved["projects"][0]["id"], "companyq")
         self.assertEqual(saved["warnings"], [])
-        self.assertEqual(self.config.read_text(), json.dumps({"paths": []}) + "\n")
+        self.assertEqual(self.config.read_bytes(), settings_before)
 
         status, loaded = self.request("GET", "/api/project-identities")
         self.assertEqual(status, 200)
@@ -125,6 +152,7 @@ class AiApiTests(unittest.TestCase):
         self.assertIn("alias", error["error"])
 
     def test_project_identity_api_returns_fingerprint_and_rejects_stale_write(self):
+        _, repository_id = self.select_github_workspace()
         status, initial = self.request("GET", "/api/project-identities")
         self.assertEqual(status, 200)
         self.assertRegex(initial["fingerprint"], r"^[0-9a-f]{64}$")
@@ -134,7 +162,13 @@ class AiApiTests(unittest.TestCase):
             "/api/project-identities",
             {
                 "version": 1,
-                "projects": [{"id": "newer", "name": "Newer"}],
+                "projects": [
+                    {
+                        "id": "newer",
+                        "name": "Newer",
+                        "repositories": [repository_id],
+                    }
+                ],
                 "expected_fingerprint": initial["fingerprint"],
             },
         )
@@ -146,7 +180,13 @@ class AiApiTests(unittest.TestCase):
             "/api/project-identities",
             {
                 "version": 1,
-                "projects": [{"id": "stale", "name": "Stale"}],
+                "projects": [
+                    {
+                        "id": "stale",
+                        "name": "Stale",
+                        "repositories": [repository_id],
+                    }
+                ],
                 "expected_fingerprint": initial["fingerprint"],
             },
         )
@@ -158,15 +198,8 @@ class AiApiTests(unittest.TestCase):
         self.assertEqual(loaded["projects"], newer["projects"])
 
     def test_project_grouping_save_preserves_tracking_and_advanced_fields(self):
-        workspace = str((self.root / "proj").resolve())
-        subprocess.run(
-            ["git", "-C", workspace, "init", "-b", "main"],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        self.server.state.select([workspace])
-        repository_id = self.server.state.workspace_inventory()[0]["repository_id"]
+        workspace_path, repository_id = self.select_github_workspace()
+        workspace = str(workspace_path.resolve())
         settings_before = self.config.read_bytes()
         existing = {
             "version": 1,
@@ -203,12 +236,9 @@ class AiApiTests(unittest.TestCase):
         self.assertEqual(saved["projects"][0]["name"], "General Tools")
         self.assertEqual(
             saved["projects"][0]["repositories"],
-            [repository_id, "remote:github.com/example/hidden"],
+            [repository_id],
         )
-        self.assertEqual(
-            saved["projects"][0]["primary_workspaces"],
-            {"remote:github.com/example/hidden": workspace},
-        )
+        self.assertEqual(saved["projects"][0]["primary_workspaces"], {})
         self.assertEqual(saved["projects"][0]["workspace_aliases"], [workspace])
         self.assertEqual(self.config.read_bytes(), settings_before)
         self.assertEqual(self.server.state.paths, [workspace])
@@ -223,6 +253,66 @@ class AiApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["paths"], [])
         self.assertEqual(payload["workspaces"], [])
+        self.assertIn("reconciliation", payload)
+
+    def test_all_tracked_data_routes_reconcile_under_the_request_lock(self):
+        routes = [
+            ("GET", "/api/status", None),
+            ("GET", "/api/project-identities", None),
+            ("POST", "/api/scan", {}),
+            ("GET", "/api/stats", None),
+            ("GET", "/api/ai/detect", None),
+            ("POST", "/api/ai/sessions", {}),
+            ("POST", "/api/ai/usage", {}),
+            ("POST", "/api/ai/search", {"q": "needle"}),
+        ]
+        original = self.server.state.reconcile_tracking
+        with patch.object(
+            self.server.state, "reconcile_tracking", wraps=original
+        ) as reconcile:
+            for method, path, body in routes:
+                with self.subTest(path=path):
+                    status, _ = self.request(method, path, body)
+                    self.assertEqual(status, 200)
+        self.assertEqual(reconcile.call_count, len(routes))
+
+    def test_status_prunes_repository_that_lost_its_github_remote(self):
+        workspace, _ = self.select_github_workspace("stale")
+        subprocess.run(
+            ["git", "-C", str(workspace), "remote", "remove", "origin"],
+            check=True,
+        )
+
+        status, payload = self.request("GET", "/api/status")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["paths"], [])
+        self.assertEqual(payload["workspaces"], [])
+        self.assertEqual(payload["repositories"], [])
+        self.assertEqual(payload["reconciliation"]["removed_paths"], 1)
+        status, stats = self.request("GET", "/api/stats")
+        self.assertEqual(status, 200)
+        self.assertEqual(stats["repositories"], [])
+        self.assertEqual(stats["projects"], [])
+
+    def test_selection_endpoint_silently_removes_ineligible_repository(self):
+        workspace = self.root / "local-only"
+        workspace.mkdir()
+        subprocess.run(
+            ["git", "-C", str(workspace), "init", "-b", "main"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        status, payload = self.request(
+            "POST", "/api/selection", {"paths": [str(workspace)]}
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["paths"], [])
+        self.assertEqual(payload["workspaces"], [])
+        self.assertEqual(payload["reconciliation"]["removed_paths"], 1)
 
     def test_sessions_lists_wave1(self):
         status, data = self.request(
@@ -258,7 +348,8 @@ class AiApiTests(unittest.TestCase):
         self.assertIn("by_workspace", usage)
 
     def test_usage_api_applies_current_project_identity_configuration(self):
-        cwd = str(self.root / "DeletedCompanyWorktree")
+        workspace, repository_id = self.select_github_workspace("company")
+        cwd = str(workspace)
         status, _ = self.request(
             "POST",
             "/api/project-identities",
@@ -268,7 +359,7 @@ class AiApiTests(unittest.TestCase):
                     {
                         "id": "company",
                         "name": "Company",
-                        "repositories": ["remote:github.com/example/company"],
+                        "repositories": [repository_id],
                         "workspace_aliases": [cwd],
                     }
                 ],
