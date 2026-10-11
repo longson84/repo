@@ -35,6 +35,7 @@ let repos = [],
   sortDir = 1;
 const statsExpandedProjects = new Set();
 const statsExpandedRepositories = new Set();
+const locExpandedProjects = new Set();
 const projectManagerDisabledState = new WeakMap();
 let drawerCloseHandler = null;
 const base = 'http://127.0.0.1:48731';
@@ -65,6 +66,7 @@ function clearPairing() {
   scannedAt = null;
   statsByPath = {};
   statsProjects = [];
+  locExpandedProjects.clear();
   gitStatsInvalidatedByIdentity = false;
   writeStoredToken('');
 }
@@ -104,6 +106,7 @@ function invalidateTrackedScopeData() {
   statsProjects = [];
   statsExpandedProjects.clear();
   statsExpandedRepositories.clear();
+  locExpandedProjects.clear();
   aiSessions = null;
   aiSearch = null;
   aiUsage = null;
@@ -192,28 +195,35 @@ function formatLocCell(n) {
 function locLanguageMatrix() {
   const field = locMetricField();
   const totals = new Map();
-  const rows = paths.map((path) => {
-    const s = statsByPath[path];
+  const sourceProjects = statsProjects.length
+    ? statsProjects
+    : paths.map((path) => {
+        const stats = statsByPath[path] || {};
+        return {
+          project_id: stats.project_id || stats.repository_id || path,
+          project_name:
+            stats.project_name || stats.repository_name || stats.name || path.split(/[\\/]/).pop(),
+          repositories: [{ ...stats, path }],
+        };
+      });
+  const valueRow = (stats, fallbackName) => {
     const byLang = {};
-    (s?.locByLanguage || []).forEach((lang) => {
+    (stats?.locByLanguage || []).forEach((lang) => {
       const name = lang?.name;
       const value = lang?.[field] || 0;
       if (!name || !value) return;
       byLang[name] = value;
-      totals.set(name, (totals.get(name) || 0) + value);
     });
     return {
-      path,
-      name: s?.name || path.split(/[\\/]/).pop(),
+      name: stats?.repository_name || stats?.name || fallbackName,
+      repositoryId: stats?.repository_id || stats?.path || fallbackName,
+      path: stats?.primary_workspace_id || stats?.path || stats?.workspaces?.[0]?.path || '',
       byLang,
       total: Object.values(byLang).reduce((sum, n) => sum + n, 0),
-      hasLoc: s?.locCode != null,
+      hasLoc: stats?.locCode != null || Array.isArray(stats?.locByLanguage),
     };
-  });
-  const languages = [...totals.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([name]) => name);
-  rows.sort((a, b) => {
+  };
+  const compareRows = (a, b) => {
     if (locSortKey === 'name') {
       const cmp = a.name.localeCompare(b.name);
       return locSortDir > 0 ? cmp : -cmp;
@@ -222,7 +232,33 @@ function locLanguageMatrix() {
     const bv = locSortKey === 'total' ? b.total : b.byLang[locSortKey] || 0;
     if (av === bv) return a.name.localeCompare(b.name);
     return av < bv ? -locSortDir : locSortDir;
+  };
+  const rows = sourceProjects.map((project) => {
+    const repositories = (project.repositories || [])
+      .map((repository) => valueRow(repository, 'Repository'))
+      .sort(compareRows);
+    const byLang = {};
+    repositories.forEach((repository) => {
+      Object.entries(repository.byLang).forEach(([name, value]) => {
+        byLang[name] = (byLang[name] || 0) + value;
+      });
+    });
+    Object.entries(byLang).forEach(([name, value]) => {
+      totals.set(name, (totals.get(name) || 0) + value);
+    });
+    return {
+      projectId: project.project_id || project.project_name || 'unattributed',
+      name: project.project_name || project.name || 'Unattributed',
+      byLang,
+      total: Object.values(byLang).reduce((sum, value) => sum + value, 0),
+      hasLoc: repositories.some((repository) => repository.hasLoc),
+      repositories,
+    };
   });
+  const languages = [...totals.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([name]) => name);
+  rows.sort(compareRows);
   return { languages, rows };
 }
 function locSortClass(key) {
@@ -243,7 +279,9 @@ function locMatrixHtml() {
       <table>
         <thead>
           <tr>
-            <th class="sticky-col ${locSortClass('name')}" data-loc-sort="name">Repo</th>
+            <th class="sticky-col ${locSortClass('name')}" data-loc-sort="name">
+              Project / repository
+            </th>
             ${languages
               .map(
                 (lang) =>
@@ -256,25 +294,59 @@ function locMatrixHtml() {
         <tbody>
           ${rows
             .map((row) => {
-              const cells = languages
-                .map((lang) => {
-                  const value = row.byLang[lang];
-                  if (!value) return '<td class="num muted">—</td>';
-                  return `<td class="num" title="${esc(formatCompact(value))}">${esc(formatLocCell(value))}</td>`;
-                })
-                .join('');
-              return /* HTML */ `
-                <tr class="board-row" data-path="${esc(row.path)}" tabindex="0">
-                  <td class="sticky-col"><strong>${esc(row.name)}</strong></td>
-                  ${cells}
-                  <td
-                    class="num ${row.total ? '' : 'muted'}"
-                    title="${esc(formatCompact(row.total))}"
-                  >
-                    ${esc(row.total ? formatLocCell(row.total) : '—')}
+              const cells = (item) =>
+                languages
+                  .map((lang) => {
+                    const value = item.byLang[lang];
+                    if (!value) return '<td class="num muted">—</td>';
+                    return `<td class="num" title="${esc(formatCompact(value))}">${esc(formatLocCell(value))}</td>`;
+                  })
+                  .join('');
+              const totalCell = (item) => /* HTML */ `
+                <td
+                  class="num ${item.total ? '' : 'muted'}"
+                  title="${esc(formatCompact(item.total))}"
+                >
+                  ${esc(item.total ? formatLocCell(item.total) : '—')}
+                </td>
+              `;
+              const expanded = locExpandedProjects.has(row.projectId);
+              const projectRow = /* HTML */ `
+                <tr class="loc-project-row">
+                  <td class="sticky-col">
+                    <button
+                      type="button"
+                      class="stats-tree-toggle"
+                      data-loc-project-toggle="${esc(row.projectId)}"
+                      aria-expanded="${expanded}"
+                      aria-label="${expanded ? 'Collapse' : 'Expand'} ${esc(row.name)}"
+                    >
+                      ${expanded ? '▾' : '▸'}
+                    </button>
+                    <strong>${esc(row.name)}</strong>
                   </td>
+                  ${cells(row)} ${totalCell(row)}
                 </tr>
               `;
+              if (!expanded) return projectRow;
+              const repositoryRows = row.repositories
+                .map(
+                  (repository) => /* HTML */ `
+                    <tr
+                      class="loc-repository-row board-row"
+                      data-path="${esc(repository.path)}"
+                      tabindex="0"
+                    >
+                      <td class="sticky-col">
+                        <span class="stats-tree-indent">↳</span>
+                        ${esc(repository.name)}
+                      </td>
+                      ${cells(repository)} ${totalCell(repository)}
+                    </tr>
+                  `,
+                )
+                .join('');
+              return projectRow + repositoryRows;
             })
             .join('')}
         </tbody>
@@ -2384,8 +2456,8 @@ function paintLanguages() {
         <h1>Languages</h1>
         <p>
           ${locMetric === 'complexity'
-            ? 'Complexity by language across tracked repositories (scc).'
-            : 'Code lines by language across tracked repositories (scc).'}
+            ? 'Complexity by language across logical projects and their repositories (scc).'
+            : 'Code lines by language across logical projects and their repositories (scc).'}
         </p>
       </div>
       <div class="actions">
@@ -2425,8 +2497,20 @@ function paintLanguages() {
   `;
   bindLanguagesPage();
 }
+function bindLocProjectToggles(redraw = paintLanguages) {
+  document.querySelectorAll('[data-loc-project-toggle]').forEach((button) => {
+    button.onclick = () => {
+      const projectId = button.dataset.locProjectToggle;
+      if (locExpandedProjects.has(projectId)) locExpandedProjects.delete(projectId);
+      else locExpandedProjects.add(projectId);
+      redraw();
+      restoreToggleFocus('[data-loc-project-toggle]', 'locProjectToggle', projectId);
+    };
+  });
+}
 function bindLanguagesPage() {
   if ($('languagesScan')) $('languagesScan').onclick = runScan;
+  bindLocProjectToggles();
   document.querySelectorAll('[data-loc-metric]').forEach((button) => {
     button.onclick = () => {
       locMetric = button.dataset.locMetric;

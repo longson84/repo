@@ -33,7 +33,7 @@ python3 companion/server.py --root ~/Projects --root /another/folder --ui
 3. **Stats** — combined activity chart and repo comparison board.
 4. **AI** (`#/ai`) — detect local AI store availability, then report conversations, transcript matches, and tokens only for selected GitHub repositories.
 5. Open a repo row for detail (volume, diff churn, commit timeline).
-6. **Languages** (`#/languages`) — sortable repos × languages matrix (code lines via [`scc`](https://github.com/boyter/scc)). Values in thousands (`1,230k`).
+6. **Languages** (`#/languages`) — sortable logical-project × languages matrix with expandable repository rows (code lines via [`scc`](https://github.com/boyter/scc)). Values in thousands (`1,230k`).
 
 Requires `scc` on `PATH` (`brew install scc`).
 

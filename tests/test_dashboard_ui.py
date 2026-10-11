@@ -178,6 +178,65 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
         )
         self.assertLess(html.index("Alpha"), html.index("Zulu"))
 
+    def test_language_matrix_aggregates_repositories_into_logical_projects(self):
+        matrix = self.render(
+            "(() => { statsProjects=[{project_id:'shared',project_name:'Shared',repositories:["
+            "{repository_id:'repo:a',repository_name:'Alpha',path:'/work/a',"
+            "locByLanguage:[{name:'TypeScript',code:100,complexity:10}]},"
+            "{repository_id:'repo:b',repository_name:'Beta',path:'/work/b',"
+            "locByLanguage:[{name:'TypeScript',code:40,complexity:4},"
+            "{name:'Python',code:60,complexity:6}]}]}]; locMetric='code';"
+            "return locLanguageMatrix(); })()"
+        )
+
+        self.assertEqual(matrix["languages"], ["TypeScript", "Python"])
+        self.assertEqual(len(matrix["rows"]), 1)
+        self.assertEqual(matrix["rows"][0]["name"], "Shared")
+        self.assertEqual(matrix["rows"][0]["byLang"]["TypeScript"], 140)
+        self.assertEqual(matrix["rows"][0]["byLang"]["Python"], 60)
+        self.assertEqual(matrix["rows"][0]["total"], 200)
+        self.assertEqual(len(matrix["rows"][0]["repositories"]), 2)
+
+    def test_language_matrix_expands_project_into_repository_rows(self):
+        html = self.render(
+            "(() => { statsProjects=[{project_id:'shared',project_name:'Shared',repositories:["
+            "{repository_id:'repo:a',repository_name:'Alpha',path:'/work/a',"
+            "locByLanguage:[{name:'TypeScript',code:100,complexity:10}]},"
+            "{repository_id:'repo:b',repository_name:'Beta',path:'/work/b',"
+            "locByLanguage:[{name:'Python',code:60,complexity:6}]}]}]; locMetric='code';"
+            "locExpandedProjects.add('shared'); return locMatrixHtml(); })()"
+        )
+
+        self.assertIn('data-loc-project-toggle="shared"', html)
+        self.assertIn('class="loc-project-row"', html)
+        self.assertIn('class="loc-repository-row board-row"', html)
+        self.assertIn('data-path="/work/a"', html)
+        self.assertIn("Alpha", html)
+        self.assertIn("Beta", html)
+
+    def test_language_project_toggle_expands_and_restores_focus(self):
+        result = self.render(
+            "(() => { const button={dataset:{locProjectToggle:'shared'},focused:false,"
+            "focus(){this.focused=true}}; let redraws=0; document.querySelectorAll=selector=>"
+            "selector==='[data-loc-project-toggle]'?[button]:[];"
+            "bindLocProjectToggles(()=>{redraws+=1}); button.onclick();"
+            "return {expanded:locExpandedProjects.has('shared'),redraws,focused:button.focused}; })()"
+        )
+
+        self.assertEqual(result, {"expanded": True, "redraws": 1, "focused": True})
+
+    def test_language_project_rows_follow_the_active_language_sort(self):
+        html = self.render(
+            "(() => { statsProjects=["
+            "{project_id:'small',project_name:'Small',repositories:[{repository_id:'repo:s',"
+            "repository_name:'Small repo',path:'/small',locByLanguage:[{name:'Python',code:10}]}]},"
+            "{project_id:'large',project_name:'Large',repositories:[{repository_id:'repo:l',"
+            "repository_name:'Large repo',path:'/large',locByLanguage:[{name:'Python',code:100}]}]}"
+            "]; locMetric='code'; locSortKey='Python'; locSortDir=-1; return locMatrixHtml(); })()"
+        )
+
+        self.assertLess(html.index("Large"), html.index("Small"))
+
     def test_toggle_focus_is_restored_after_rerender(self):
         focused = self.render(
             "(() => { let focused=false; document.querySelectorAll=() => ["
