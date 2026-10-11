@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .base import clip, project_name, summary
+from ..identity import conversation_key, execution_key
 
 
 def _mtime_iso(path: Path) -> Optional[str]:
@@ -139,6 +140,22 @@ def list_cli_sessions(chats_root: Path, source_id: str = "cursor.cli") -> list[d
                 updated_at=_mtime_iso(db),
                 size_bytes=size,
                 path=str(db),
+                conversation_key=conversation_key("cursor", str(meta.get("agentId") or chat_id)),
+                source_ids=[source_id],
+                paths=[str(db)],
+                execution_count=1,
+                executions=[
+                    {
+                        "id": str(meta.get("agentId") or chat_id),
+                        "provider_execution_id": str(meta.get("agentId") or chat_id),
+                        "execution_key": execution_key(
+                            source_id, str(meta.get("agentId") or chat_id)
+                        ),
+                        "parent_execution_key": None,
+                        "kind": "root",
+                    }
+                ],
+                identity_confidence="provider",
             )
         )
     return out
@@ -207,13 +224,27 @@ def list_agent_transcripts(projects_root: Path, source_id: str = "cursor.agent-t
                 id=path.stem,
                 source_id=source_id,
                 tool="cursor",
-                surface="agent-transcripts",
+                surface="unknown",
                 project=project,
                 title=preview,
                 preview=preview,
                 updated_at=_mtime_iso(path),
                 size_bytes=size,
                 path=str(path),
+                conversation_key=conversation_key("cursor", path.stem),
+                source_ids=[source_id],
+                paths=[str(path)],
+                execution_count=1,
+                executions=[
+                    {
+                        "id": path.stem,
+                        "provider_execution_id": path.stem,
+                        "execution_key": execution_key(source_id, path.stem),
+                        "parent_execution_key": None,
+                        "kind": "unknown",
+                    }
+                ],
+                identity_confidence="provider",
             )
         )
     return out

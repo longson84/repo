@@ -93,6 +93,35 @@ class AntigravityUsageTests(unittest.TestCase):
             self.assertEqual(events[0]["model"], "gemini-3-pro-high")
             self.assertEqual(events[0]["input_tokens"], 10)
 
+    def test_antigravity_unknown_enum_preserves_model_id_and_reports_output_invariant_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            conv = root / "conversations"
+            conv.mkdir(parents=True)
+            usage_msg = (
+                _f_varint(1, 999)
+                + _f_varint(2, 10)
+                + _f_varint(3, 10)
+                + _f_varint(9, 3)
+                + _f_varint(10, 2)
+            )
+            meta = _f_bytes(9, usage_msg) + _f_varint(11, 999)
+            db = conv / "session-1.db"
+            con = sqlite3.connect(db)
+            con.execute(
+                "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INT, metadata BLOB)"
+            )
+            con.execute("INSERT INTO steps VALUES (7, 15, ?)", (meta,))
+            con.commit()
+            con.close()
+
+            result = antigravity.collect_usage(root, "antigravity.app", "app")
+
+            self.assertEqual(result["events"][0]["model_id"], 999)
+            self.assertEqual(result["events"][0]["model"], "antigravity-model-999")
+            self.assertEqual(result["events"][0]["event_key"], "antigravity:session-1:step:7")
+            self.assertEqual(result["warnings"][0]["code"], "output_invariant_mismatch")
+
 
 class ClaudeCodexUsageTests(unittest.TestCase):
     def test_claude_message_usage(self):
@@ -292,6 +321,32 @@ class ClaudeCodexUsageTests(unittest.TestCase):
 
 
 class AggregateUsageTests(unittest.TestCase):
+    def test_antigravity_duplicate_step_identity_is_counted_once_across_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp)
+            usage_msg = _f_varint(1, 1319) + _f_varint(2, 10) + _f_varint(3, 5)
+            meta = _f_bytes(9, usage_msg) + _f_varint(11, 1319)
+            for relative in ("antigravity", "antigravity-cli"):
+                conv = home / ".gemini" / relative / "conversations"
+                conv.mkdir(parents=True)
+                db = conv / "same-session.db"
+                con = sqlite3.connect(db)
+                con.execute(
+                    "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INT, metadata BLOB)"
+                )
+                con.execute("INSERT INTO steps VALUES (3, 15, ?)", (meta,))
+                con.commit()
+                con.close()
+
+            result = usage_mod.aggregate_usage(
+                sources=["antigravity.app", "antigravity.cli"],
+                home=home,
+                env={},
+            )
+
+            self.assertEqual(result["totals"]["events"], 1)
+            self.assertEqual(result["totals"]["input_tokens"], 10)
+
     def test_aggregate_by_model_and_surface(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = pathlib.Path(tmp)

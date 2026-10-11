@@ -1,9 +1,11 @@
 import importlib.util
 import json
+import os
 import pathlib
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 
@@ -96,6 +98,66 @@ class AiApiTests(unittest.TestCase):
         self.assertIn("totals", usage)
         self.assertIn("by_model", usage)
         self.assertIn("caveats", usage)
+
+    def test_usage_api_accepts_conversation_keys_and_compound_sessions(self):
+        claude_root = self.root / "claude-home"
+        transcript = claude_root / "projects" / "demo" / "session-1.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "sessionId": "session-1",
+                    "timestamp": "2026-03-01T12:00:00Z",
+                    "message": {
+                        "id": "msg-1",
+                        "model": "claude-sonnet-4-6",
+                        "usage": {"input_tokens": 3, "output_tokens": 5},
+                    },
+                }
+            )
+            + "\n"
+        )
+        other = claude_root / "projects" / "demo" / "session-2.jsonl"
+        other.write_text(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "sessionId": "session-2",
+                    "timestamp": "2026-03-01T12:01:00Z",
+                    "message": {
+                        "id": "msg-2",
+                        "model": "claude-sonnet-4-6",
+                        "usage": {"input_tokens": 4, "output_tokens": 7},
+                    },
+                }
+            )
+            + "\n"
+        )
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(claude_root)}):
+            status, canonical = self.request(
+                "POST",
+                "/api/ai/usage",
+                {
+                    "sources": ["claude.code"],
+                    "conversation_keys": ["claude-code:conversation:session-1"],
+                },
+            )
+            status_compound, compound = self.request(
+                "POST",
+                "/api/ai/usage",
+                {
+                    "sources": ["claude.code"],
+                    "sessions": [
+                        {"source_id": "claude.code", "session_id": "session-1"}
+                    ],
+                },
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(status_compound, 200)
+        self.assertEqual(canonical["totals"]["output_tokens"], 5)
+        self.assertEqual(compound["totals"], canonical["totals"])
 
     def test_search_requires_query(self):
         status, data = self.request("POST", "/api/ai/search", {"q": "  "})

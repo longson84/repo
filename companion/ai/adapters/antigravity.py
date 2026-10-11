@@ -11,6 +11,11 @@ from typing import Any, Iterator, Optional
 from urllib.parse import unquote, urlparse
 
 from .base import clip, project_name, summary
+from ..identity import conversation_key, execution_key
+
+
+PARSER_NAME = "antigravity-sqlite-protobuf"
+PARSER_VERSION = 2
 
 USER_REQUEST_RE = re.compile(
     r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.S | re.I
@@ -277,6 +282,20 @@ def list_sessions(root: Path, source_id: str, surface: str) -> list[dict]:
                 updated_at=_iso_from_sqlite(last_mod) or _iso_from_sqlite(last_user),
                 size_bytes=size,
                 path=str(transcript if transcript.is_file() else conv),
+                conversation_key=conversation_key("antigravity", cid),
+                source_ids=[source_id],
+                paths=[str(transcript if transcript.is_file() else conv)],
+                execution_count=1,
+                executions=[
+                    {
+                        "id": cid,
+                        "provider_execution_id": cid,
+                        "execution_key": execution_key(source_id, cid),
+                        "parent_execution_key": None,
+                        "kind": "root",
+                    }
+                ],
+                identity_confidence="provider",
                 extra={"step_count": step_count},
             )
 
@@ -303,6 +322,20 @@ def list_sessions(root: Path, source_id: str, surface: str) -> list[dict]:
                 updated_at=_mtime_iso(transcript if transcript.is_file() else db),
                 size_bytes=_size(db) + _size(transcript),
                 path=str(transcript if transcript.is_file() else db),
+                conversation_key=conversation_key("antigravity", cid),
+                source_ids=[source_id],
+                paths=[str(transcript if transcript.is_file() else db)],
+                execution_count=1,
+                executions=[
+                    {
+                        "id": cid,
+                        "provider_execution_id": cid,
+                        "execution_key": execution_key(source_id, cid),
+                        "parent_execution_key": None,
+                        "kind": "root",
+                    }
+                ],
+                identity_confidence="provider",
             )
 
     return list(by_id.values())
@@ -332,19 +365,19 @@ def _project_map(root: Path) -> dict[str, str]:
     return mapping
 
 
-def iter_usage(
-    root: Path, source_id: str, surface: str
-) -> Iterator[dict[str, Any]]:
-    """Yield per-model-step usage events from conversations/*.db."""
+def collect_usage(root: Path, source_id: str, surface: str) -> dict[str, Any]:
+    """Collect normalized per-model-step events and parser warnings."""
     root = Path(root)
     conv_dir = root / "conversations"
     if not conv_dir.is_dir():
-        return
+        return {"events": [], "reconciliation": [], "warnings": []}
     projects = _project_map(root)
     try:
         dbs = sorted(conv_dir.glob("*.db"))
     except OSError:
-        return
+        return {"events": [], "reconciliation": [], "warnings": []}
+    events: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     for db in dbs:
         session_id = db.stem
         project = projects.get(session_id)
@@ -368,7 +401,7 @@ def iter_usage(
             try:
                 rows = con.execute(
                     """
-                    SELECT metadata FROM steps
+                    SELECT idx, metadata FROM steps
                     WHERE step_type = ? AND metadata IS NOT NULL
                     """,
                     (STEP_TYPE_MODEL,),
@@ -384,17 +417,22 @@ def iter_usage(
             ).strftime("%Y-%m-%d")
         except OSError:
             pass
-        for (meta,) in rows:
+        for step_index, meta in rows:
             if not isinstance(meta, (bytes, bytearray)):
                 continue
             parsed = parse_usage_metadata(bytes(meta))
             if not parsed:
                 continue
-            yield {
+            event = {
+                "event_key": f"antigravity:{session_id}:step:{step_index}",
                 "session_id": session_id,
+                "conversation_key": conversation_key("antigravity", session_id),
+                "execution_key": execution_key(source_id, session_id),
+                "execution_kind": "root",
                 "source_id": source_id,
                 "tool": "antigravity",
                 "surface": surface,
+                "provider": "antigravity",
                 "model": parsed["model"],
                 "model_id": parsed.get("model_id"),
                 "project": project,
@@ -405,4 +443,26 @@ def iter_usage(
                 "cache_write_tokens": 0,
                 "thinking_tokens": parsed.get("thinking_tokens") or 0,
                 "visible_tokens": parsed.get("visible_tokens") or 0,
+                "parser": PARSER_NAME,
+                "parser_version": PARSER_VERSION,
+                "confidence": "provider",
             }
+            events.append(event)
+            component_total = event["thinking_tokens"] + event["visible_tokens"]
+            if component_total and component_total != event["output_tokens"]:
+                warnings.append(
+                    {
+                        "code": "output_invariant_mismatch",
+                        "source_id": source_id,
+                        "session_id": session_id,
+                        "event_key": event["event_key"],
+                    }
+                )
+    return {"events": events, "reconciliation": [], "warnings": warnings}
+
+
+def iter_usage(
+    root: Path, source_id: str, surface: str
+) -> Iterator[dict[str, Any]]:
+    """Yield normalized per-model-step usage events."""
+    yield from collect_usage(root, source_id, surface)["events"]

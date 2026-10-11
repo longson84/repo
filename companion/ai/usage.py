@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 from .adapters import antigravity, claude_code, codex
 from .catalog import resolve_sources
 from . import prices as prices_mod
+from .sessions import collect_sessions, resolve_conversation_selectors
 
 WAVE1_USAGE_SUPPORTED = {
     "antigravity.app",
@@ -80,18 +81,22 @@ def period_keys(date_str: Optional[str]) -> Optional[dict[str, str]]:
     }
 
 
-def _iter_source_usage(source: Mapping[str, Any]) -> Iterable[dict[str, Any]]:
+def _collect_source_usage(source: Mapping[str, Any]) -> dict[str, Any]:
     source_id = source["id"]
     path = Path(source["path"])
     if not path.exists():
-        return []
+        return {"events": [], "reconciliation": [], "warnings": []}
     if source_id.startswith("antigravity."):
-        return antigravity.iter_usage(path, source_id, source["surface"])
+        return antigravity.collect_usage(path, source_id, source["surface"])
     if source_id == "claude.code":
-        return claude_code.iter_usage(path, source_id)
+        return claude_code.collect_usage(path, source_id)
     if source_id == "codex.home":
-        return codex.iter_usage(path, source_id)
-    return []
+        return {
+            "events": list(codex.iter_usage(path, source_id)),
+            "reconciliation": [],
+            "warnings": [],
+        }
+    return {"events": [], "reconciliation": [], "warnings": []}
 
 
 def _sorted_cost(rows: dict[str, dict[str, Any]], key: str) -> list[dict[str, Any]]:
@@ -144,6 +149,8 @@ def aggregate_usage(
     *,
     sources: Optional[Sequence[str]] = None,
     session_ids: Optional[Sequence[str]] = None,
+    conversation_keys: Optional[Sequence[str]] = None,
+    compound_sessions: Optional[Sequence[Mapping[str, str]]] = None,
     prices_path: Optional[Path] = None,
     env: Optional[Mapping[str, str]] = None,
     home: Optional[Path] = None,
@@ -161,6 +168,28 @@ def aggregate_usage(
         for item in session_filter:
             if not isinstance(item, str):
                 raise ValueError("session_ids must be strings.")
+    if conversation_keys is not None:
+        for item in conversation_keys:
+            if not isinstance(item, str):
+                raise ValueError("conversation_keys must be strings.")
+    if compound_sessions is not None:
+        for item in compound_sessions:
+            if not isinstance(item, Mapping):
+                raise ValueError("sessions must contain objects.")
+            if not isinstance(item.get("source_id"), str) or not isinstance(
+                item.get("session_id"), str
+            ):
+                raise ValueError("sessions require string source_id and session_id.")
+
+    canonical_filter = None
+    if conversation_keys or compound_sessions or session_ids:
+        inventory = collect_sessions(sources=sources, env=env, home=home)
+        canonical_filter = resolve_conversation_selectors(
+            inventory,
+            conversation_keys=conversation_keys,
+            compound_sessions=compound_sessions,
+            legacy_session_ids=session_ids,
+        )
 
     price_file = Path(prices_path) if prices_path else None
     table = (
@@ -181,6 +210,8 @@ def aggregate_usage(
     by_year: dict[str, dict[str, Any]] = {}
     scanned: list[str] = []
     unsupported_notes: list[dict[str, str]] = []
+    warnings: list[dict[str, Any]] = []
+    unique_events: dict[str, dict[str, Any]] = {}
 
     period_stores = {
         "day": by_day,
@@ -202,60 +233,76 @@ def aggregate_usage(
         if sid not in WAVE1_USAGE_SUPPORTED:
             continue
         scanned.append(sid)
-        for event in _iter_source_usage(source):
-            if session_filter is not None and event.get("session_id") not in session_filter:
+        batch = _collect_source_usage(source)
+        warnings.extend(batch.get("warnings") or [])
+        for index, event in enumerate(batch.get("events") or []):
+            if (
+                canonical_filter is not None
+                and event.get("conversation_key") not in canonical_filter
+            ):
                 continue
-            cost = prices_mod.estimate_cost(event, table)
-            _add(totals, event, cost)
-
-            model_key = str(event.get("model") or "unknown")
-            model_bucket = by_model.setdefault(
-                model_key, {**_empty_bucket(), "model": model_key}
+            event_key = str(
+                event.get("event_key")
+                or f"{sid}:{event.get('session_id')}:{event.get('date')}:{index}"
             )
-            _add(model_bucket, event, cost)
+            if event_key in unique_events:
+                continue
+            unique_events[event_key] = event
 
-            project_key = str(event.get("project") or "unknown")
-            project_bucket = by_project.setdefault(
+    for event in unique_events.values():
+        cost = prices_mod.estimate_cost(event, table)
+        _add(totals, event, cost)
+
+        model_key = str(event.get("model") or "unknown")
+        model_bucket = by_model.setdefault(
+            model_key, {**_empty_bucket(), "model": model_key}
+        )
+        _add(model_bucket, event, cost)
+
+        project_key = str(event.get("project") or "unknown")
+        project_bucket = by_project.setdefault(
+            project_key, {**_empty_bucket(), "project": project_key}
+        )
+        _add(project_bucket, event, cost)
+
+        surface_key = f"{event.get('tool')}:{event.get('surface')}"
+        surface_bucket = by_surface.setdefault(
+            surface_key,
+            {
+                **_empty_bucket(),
+                "tool": event.get("tool"),
+                "surface": event.get("surface"),
+                "label": surface_key,
+            },
+        )
+        _add(surface_bucket, event, cost)
+
+        tool_key = str(event.get("tool") or "unknown")
+        tool_bucket = by_tool.setdefault(
+            tool_key, {**_empty_bucket(), "tool": tool_key}
+        )
+        _add(tool_bucket, event, cost)
+
+        src_key = str(event.get("source_id") or "unknown")
+        src_bucket = by_source.setdefault(
+            src_key, {**_empty_bucket(), "source_id": src_key}
+        )
+        _add(src_bucket, event, cost)
+
+        keys = period_keys(event.get("date"))
+        if keys is None:
+            continue
+        for grain, period in keys.items():
+            bucket = _period_bucket(period_stores[grain], period)
+            _add(bucket, event, cost)
+            models = bucket["_models"]
+            mb = models.setdefault(model_key, {**_empty_bucket(), "model": model_key})
+            _add(mb, event, cost)
+            projects = bucket["_projects"]
+            pb = projects.setdefault(
                 project_key, {**_empty_bucket(), "project": project_key}
             )
-            _add(project_bucket, event, cost)
-
-            surface_key = f"{event.get('tool')}:{event.get('surface')}"
-            surface_bucket = by_surface.setdefault(
-                surface_key,
-                {
-                    **_empty_bucket(),
-                    "tool": event.get("tool"),
-                    "surface": event.get("surface"),
-                    "label": surface_key,
-                },
-            )
-            _add(surface_bucket, event, cost)
-
-            tool_key = str(event.get("tool") or "unknown")
-            tool_bucket = by_tool.setdefault(tool_key, {**_empty_bucket(), "tool": tool_key})
-            _add(tool_bucket, event, cost)
-
-            src_key = str(event.get("source_id") or sid)
-            src_bucket = by_source.setdefault(
-                src_key, {**_empty_bucket(), "source_id": src_key}
-            )
-            _add(src_bucket, event, cost)
-
-            keys = period_keys(event.get("date"))
-            if keys is None:
-                continue
-            for grain, period in keys.items():
-                bucket = _period_bucket(period_stores[grain], period)
-                _add(bucket, event, cost)
-                models = bucket["_models"]
-                mb = models.setdefault(model_key, {**_empty_bucket(), "model": model_key})
-                _add(mb, event, cost)
-                projects = bucket["_projects"]
-                pb = projects.setdefault(
-                    project_key, {**_empty_bucket(), "project": project_key}
-                )
-                _add(pb, event, cost)
+            _add(pb, event, cost)
 
     totals["cost_usd"] = round(float(totals["cost_usd"]), 6)
     by_day_rows = _serialize_periods(by_day)
@@ -270,6 +317,7 @@ def aggregate_usage(
         "usage_supported": sorted(WAVE1_USAGE_SUPPORTED),
         "usage_unsupported": unsupported_notes,
         "caveats": CAVEATS,
+        "quality": {"warnings": warnings, "warning_count": len(warnings)},
         "prices": {
             "currency": table.get("currency") or "USD",
             "notes": table.get("notes") or "",

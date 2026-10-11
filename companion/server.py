@@ -999,7 +999,23 @@ class State:
         limit = data.get("limit", 100)
         if not isinstance(limit, int):
             raise ValueError("limit must be an integer.")
-        return list_sessions(sources=sources, project=project, limit=limit)
+        include_executions = data.get("include_executions", False)
+        if not isinstance(include_executions, bool):
+            raise ValueError("include_executions must be a boolean.")
+        conversation_keys = data.get("conversation_keys")
+        if conversation_keys is not None and not isinstance(conversation_keys, list):
+            raise ValueError("conversation_keys must be a list of strings.")
+        if isinstance(conversation_keys, list) and not all(
+            isinstance(item, str) for item in conversation_keys
+        ):
+            raise ValueError("conversation_keys must be strings.")
+        return list_sessions(
+            sources=sources,
+            project=project,
+            limit=limit,
+            include_executions=include_executions,
+            conversation_keys=conversation_keys,
+        )
 
     def list_ai_usage(self, data):
         sources = data.get("sources")
@@ -1016,9 +1032,31 @@ class State:
             for item in session_ids:
                 if not isinstance(item, str):
                     raise ValueError("session_ids must be strings.")
+        conversation_keys = data.get("conversation_keys")
+        if conversation_keys is not None and not isinstance(conversation_keys, list):
+            raise ValueError("conversation_keys must be a list of strings.")
+        if isinstance(conversation_keys, list) and not all(
+            isinstance(item, str) for item in conversation_keys
+        ):
+            raise ValueError("conversation_keys must be strings.")
+        compound_sessions = data.get("sessions")
+        if compound_sessions is not None and not isinstance(compound_sessions, list):
+            raise ValueError("sessions must be a list of objects.")
+        if isinstance(compound_sessions, list):
+            for item in compound_sessions:
+                if not isinstance(item, dict):
+                    raise ValueError("sessions must contain objects.")
+                if not isinstance(item.get("source_id"), str) or not isinstance(
+                    item.get("session_id"), str
+                ):
+                    raise ValueError(
+                        "sessions require string source_id and session_id."
+                    )
         return aggregate_usage(
             sources=sources,
             session_ids=session_ids,
+            conversation_keys=conversation_keys,
+            compound_sessions=compound_sessions,
             prices_path=self.ai_prices_path,
         )
 

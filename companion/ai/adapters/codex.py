@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from .base import clip, project_name, summary
+from ..identity import conversation_key, execution_key
 
 
 def _first_user_preview(path: Path) -> Optional[str]:
@@ -112,6 +113,20 @@ def list_sessions(root: Path, source_id: str = "codex.home") -> list[dict]:
                 updated_at=_mtime_iso(path),
                 size_bytes=size,
                 path=str(path),
+                conversation_key=conversation_key("codex", sid),
+                source_ids=[source_id],
+                paths=[str(path)],
+                execution_count=1,
+                executions=[
+                    {
+                        "id": sid,
+                        "provider_execution_id": sid,
+                        "execution_key": execution_key(source_id, sid),
+                        "parent_execution_key": None,
+                        "kind": "root",
+                    }
+                ],
+                identity_confidence="provider",
             )
         )
     return out
@@ -185,10 +200,15 @@ def iter_usage(root: Path, source_id: str = "codex.home") -> Iterator[dict[str, 
                     if uncached == 0 and cached == 0 and out == 0 and write == 0:
                         continue
                     yield {
+                        "event_key": f"codex:{session_id}:token-count:{row.get('timestamp') or 'unknown'}",
                         "session_id": session_id,
+                        "conversation_key": conversation_key("codex", session_id),
+                        "execution_key": execution_key(source_id, session_id),
+                        "execution_kind": "root",
                         "source_id": source_id,
                         "tool": "codex",
                         "surface": "cli+app",
+                        "provider": "openai",
                         "model": model,
                         "project": project,
                         "cwd": cwd,

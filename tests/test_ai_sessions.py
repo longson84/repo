@@ -232,6 +232,132 @@ class SessionAdapterTests(unittest.TestCase):
         self.assertEqual(rows[0]["id"], "agent-1")
         self.assertEqual(rows[0]["project"], "zoo")
 
+    def test_cursor_cli_and_transcript_uuid_merge_into_one_conversation(self):
+        chat_id = "cursor-shared"
+        chats = self.home / ".cursor" / "chats" / "hash1" / chat_id
+        chats.mkdir(parents=True)
+        db = chats / "store.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE meta (key TEXT, value TEXT)")
+        con.execute("CREATE TABLE blobs (id TEXT, data BLOB)")
+        meta = {"agentId": chat_id, "name": "Shared", "createdAt": 1700000000000}
+        con.execute(
+            "INSERT INTO meta(key, value) VALUES (?, ?)",
+            ("0", json.dumps(meta).encode().hex()),
+        )
+        con.commit()
+        con.close()
+        transcript = (
+            self.home
+            / ".cursor"
+            / "projects"
+            / "demo"
+            / "agent-transcripts"
+            / chat_id
+            / f"{chat_id}.jsonl"
+        )
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(json.dumps({"role": "user", "content": "hello"}) + "\n")
+
+        payload = sessions_mod.list_sessions(
+            sources=["cursor.cli", "cursor.agent-transcripts"],
+            limit=10,
+            home=self.home,
+            env={},
+        )
+
+        self.assertEqual(payload["conversation_count"], 1)
+        self.assertEqual(payload["representation_count"], 2)
+        self.assertEqual(payload["sessions"][0]["surface"], "cli")
+        self.assertEqual(
+            payload["sessions"][0]["source_ids"],
+            ["cursor.agent-transcripts", "cursor.cli"],
+        )
+
+    def test_antigravity_same_provider_uuid_merges_sources_without_duplicate_session(self):
+        conversation_id = "antigravity-shared"
+        for relative in ("antigravity", "antigravity-cli"):
+            conversations = self.home / ".gemini" / relative / "conversations"
+            conversations.mkdir(parents=True)
+            (conversations / f"{conversation_id}.db").write_bytes(b"not-a-db")
+
+        payload = sessions_mod.list_sessions(
+            sources=["antigravity.app", "antigravity.cli"],
+            limit=10,
+            home=self.home,
+            env={},
+        )
+
+        self.assertEqual(payload["conversation_count"], 1)
+        self.assertEqual(payload["representation_count"], 2)
+        self.assertEqual(
+            payload["sessions"][0]["source_ids"],
+            ["antigravity.app", "antigravity.cli"],
+        )
+
+    def test_same_bare_id_across_tools_requires_compound_selector(self):
+        shared_id = "shared-id"
+        claude = self.home / ".claude" / "projects" / "demo" / f"{shared_id}.jsonl"
+        claude.parent.mkdir(parents=True)
+        claude.write_text(
+            json.dumps({"type": "user", "sessionId": shared_id, "message": {"content": "x"}})
+            + "\n"
+        )
+        codex_path = (
+            self.home
+            / ".codex"
+            / "sessions"
+            / "2026"
+            / "01"
+            / "01"
+            / f"rollout-{shared_id}.jsonl"
+        )
+        codex_path.parent.mkdir(parents=True)
+        codex_path.write_text(
+            json.dumps({"type": "session_meta", "payload": {"id": shared_id}}) + "\n"
+        )
+        rows = sessions_mod.collect_sessions(home=self.home, env={})
+
+        with self.assertRaisesRegex(ValueError, "Ambiguous session id.*claude-code.*codex"):
+            sessions_mod.resolve_conversation_selectors(
+                rows,
+                conversation_keys=None,
+                compound_sessions=None,
+                legacy_session_ids=[shared_id],
+            )
+
+    def test_session_response_reports_conversation_execution_and_representation_counts(self):
+        project = self.home / ".claude" / "projects" / "demo"
+        parent = project / "session-1.jsonl"
+        child = project / "session-1" / "subagents" / "agent-1.jsonl"
+        child.parent.mkdir(parents=True)
+        parent.write_text(
+            json.dumps({"type": "user", "sessionId": "session-1", "message": {"content": "x"}})
+            + "\n"
+        )
+        child.write_text(
+            json.dumps({"type": "assistant", "sessionId": "session-1", "message": {}})
+            + "\n"
+        )
+
+        payload = sessions_mod.list_sessions(
+            sources=["claude.code"], limit=10, home=self.home, env={}
+        )
+
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["conversation_count"], 1)
+        self.assertEqual(payload["execution_count"], 2)
+        self.assertEqual(payload["representation_count"], 2)
+        self.assertNotIn("executions", payload["sessions"][0])
+        detailed = sessions_mod.list_sessions(
+            sources=["claude.code"],
+            limit=10,
+            home=self.home,
+            env={},
+            include_executions=True,
+        )
+        self.assertEqual(len(detailed["sessions"][0]["executions"]), 2)
+
     def test_list_sessions_filters_and_limits(self):
         # minimal claude fixture
         root = self.home / ".claude" / "projects" / "p"
