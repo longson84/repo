@@ -1,3 +1,4 @@
 .repo-local/
+.superpowers/brainstorm/
 __pycache__/
 *.pyc
