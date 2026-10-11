@@ -1,87 +1,72 @@
 # Repo
 
-Track selected Git repositories on the computer you are currently using.
+Local dashboard for the Git repositories on **this** machine: sync status (ahead / behind / dirty) and commit stats. Everything runs on loopback; nothing is uploaded.
 
-Dashboard: https://repo.theana.online · GitHub: https://github.com/longson84/repo
+Requires Python 3.9+ and Git. No Python packages to install.
 
-## Start on each machine
+## Start
 
-Requires Python 3.9+ and Git. No Python packages need installing.
-
-**Local (recommended):** from this repo root, one memorable command starts the companion, serves the dashboard, opens the browser, and pairs automatically:
+From this checkout:
 
 ```sh
 python3 run repo
 ```
 
-Same thing, longer form:
+That starts the companion, serves the UI at `http://127.0.0.1:8766`, opens the browser, and pairs automatically. Keep the terminal open.
+
+Defaults to scanning under `~/Projects`. Another folder:
 
 ```sh
-python3 companion/server.py --root ~/Projects --ui
+python3 run repo /path/to/folder
 ```
 
-Keep that terminal running. The browser opens `http://127.0.0.1:8766` already paired. Refresh keeps the connection; use **Disconnect** in the UI to forget the token. The pairing token is stored in ignored `.repo-local/pairing-token` and reused across companion restarts. Pass `--new-token` when you want to rotate it.
-
-**Hosted dashboard:** start without `--ui`, open https://repo.theana.online, choose **Connect companion**, and paste the token once. The browser remembers it in `localStorage` until you disconnect.
+Several approved roots:
 
 ```sh
-python3 companion/server.py --root ~/Projects
+python3 companion/server.py --root ~/Projects --root /another/folder --ui
 ```
 
-The companion listens at `127.0.0.1:48731`. The public website does not run Git; the companion runs it on the machine where it is installed. Git uses that machine’s existing remote authentication.
+## Use
 
-## Choose repositories
+1. **Manage tracked repos** — discover under an approved folder, then tick what to track (applies immediately).
+2. **Scan** — refresh sync status and portfolio stats for tracked repos.
+3. **Stats** — combined activity chart and repo comparison board.
+4. Open a repo row for the detail timeline (day / week / month / year).
 
-1. Open **Manage tracked repos**.
-2. Enter a discovery folder within an approved root and click **Discover repositories**.
-3. Tick the repositories you want (or untick to stop tracking) — changes apply immediately. You can also add a repository by full local path.
-4. **Scan** (sync status + portfolio stats).
+Discovery walks up to three directory levels and skips hidden folders, dependencies, and build output. Deeper repos can be added by full path.
 
-Discovery searches up to three nested directory levels and skips repository internals, hidden folders, dependencies, and build output. An individual repository root can be added explicitly when it is deeper.
+## What Scan does
 
-Only selected repos are scanned. Settings live in ignored `.repo-local/settings.json` inside this checkout. Each computer has its own selection. To approve multiple folders:
+- Fetches the current branch’s upstream and reports ahead / behind, modified, and untracked counts.
+- Never pulls, pushes, commits, checks out, or stashes.
+- Recomputes local stats (history only; no remote fetch for stats).
 
-```sh
-python3 companion/server.py --root ~/Projects --root /another/folder
-```
+## Data on this machine
 
-## Scan behavior
+All of this is gitignored under `.repo-local/`:
 
-The scanner fetches the current branch’s upstream remote and reports its ahead/behind counts, modified files, and untracked files. It never pulls, pushes, commits, checks out branches, or auto-stashes. Missing upstreams and failed fetches display an error with unknown counts. The sync preview shows clean branches eligible for future fast-forward updates.
+| File | Purpose |
+|------|---------|
+| `settings.json` | Tracked repo paths |
+| `scan.json` | Last Scan snapshot (survives browser refresh) |
+| `stats.json` | Stats cache (reuse ~24h while `HEAD` unchanged) |
+| `pairing-token` | Companion pairing secret |
 
-Other local branches, stashes, ignored files, and databases are not included. A second machine’s report is not shared to this one yet; open the dashboard and scan on each machine separately.
+**Disconnect** in the UI forgets the browser token. Restarting the companion reuses the same token unless you pass `--new-token`.
 
-## Repository stats
+Each computer has its own `.repo-local/`. There is no cross-machine sharing yet — run the app separately on each machine.
 
-Stats are separate from the sync scan. After pairing, the dashboard can load local Git statistics for tracked repositories (commit counts, recent activity, contributors, size, languages, branches, remotes, stashes, and recent churn).
-
-- **Scan** refreshes sync status and recomputes portfolio stats for every tracked path.
-- **Stats** (`#/stats`) combines activity across tracked repos (day/week/month chart + top repos) and a sortable comparison board (7d / 30d / all / last commit / 30-day sparkline).
-- Click a repository name or **Open** to open its detail page (`#/repo?<path>`). Missing stats are computed on demand; **Refresh stats** on a detail page forces a recompute.
-- The detail page shows volume/age, burst vs quiet weeks, and a commit timeline by **day**, **week**, **month**, and **year**.
-- Results are cached in ignored `.repo-local/stats.json` on that machine. A cache entry is reused for 24 hours while `HEAD` is unchanged; a new commit or an explicit refresh invalidates it. Older cache entries without the timeline are recomputed automatically.
-- The latest **Scan** snapshot is cached in `.repo-local/scan.json`, so a browser refresh restores the last sync table without scanning again.
-- Portfolio totals sum only repositories that already have cached stats. List and detail views share the same cache entry per absolute path. Stats never fetch remotes and are not merged across machines.
-
-## Local preview and tests
-
-`--ui` already serves `dist/` on port 8766. To preview the UI alone (without auto-pair):
-
-```sh
-python3 -m http.server 8766 --bind 127.0.0.1 --directory dist
-```
+## Tests
 
 ```sh
 python3 -m unittest discover -s tests -v
 ```
 
-The companion accepts only the hosted dashboard and the documented local-preview origins, with a pairing token and a loopback Host header. Paths are resolved against roots approved on the command line. Unauthenticated or unrelated-origin requests cannot inspect repositories or change the selection.
+## Layout
 
-## Source and deployment
+- `run` — memorable launcher (`python3 run repo`)
+- `dist/` — dashboard UI
+- `companion/server.py` — loopback API, discovery, scan, stats
+- `tests/` — companion tests
 
-- `dist/index.html`: dashboard layout and styling.
-- `dist/app.js`: pairing, selection, scanning, stats, and status rendering.
-- `companion/server.py`: local discovery, Git scanner, and stats collector.
-- `.openai/hosting.json`: existing Sites project identity; preserve it when publishing updates.
-
-GitHub stores the project source. Hosting remains through Sites with private access and the custom domain `repo.theana.online`. Deployments use the Sites-managed source repository; pushing GitHub does not automatically deploy. Local settings and pairing tokens (`.repo-local/`) must never be included in deployment artifacts.
+The companion only accepts local UI origins, a pairing token, and a loopback host. Paths must stay inside the `--root` folders you pass at start.
