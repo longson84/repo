@@ -107,6 +107,17 @@ def _normalize_repository_id(value: Any) -> str:
     raise ValueError("repository identity must start with remote: or gitdir:")
 
 
+def is_github_repository_id(value: Any) -> bool:
+    """Return whether value is a canonical public GitHub repository identity."""
+    if not isinstance(value, str) or not value.strip().startswith("remote:"):
+        return False
+    try:
+        normalized = _normalize_repository_id(value)
+    except ValueError:
+        return False
+    return normalized.startswith("remote:github.com/")
+
+
 def _normalize_config(payload: Mapping[str, Any], *, strict: bool) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise ValueError("identity configuration must be an object")
@@ -235,6 +246,65 @@ def _run_git(path: str, *args: str) -> str:
     return result.stdout.strip()
 
 
+def resolve_live_repository(
+    workspace_path: str,
+    git_runner: Callable[..., str] = _run_git,
+) -> tuple[Optional[str], str]:
+    """Resolve live Git evidence, preferring a deterministic GitHub remote."""
+    path = Path(workspace_path)
+    if not path.is_dir():
+        return None, path.name or "Workspace"
+    try:
+        common = git_runner(
+            workspace_path,
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None, path.name or "Workspace"
+    common_id = canonicalize_workspace_path(common)
+    repository_name = Path(common_id).parent.name or path.name or "Repository"
+    try:
+        remotes = {
+            item.strip()
+            for item in git_runner(workspace_path, "remote").splitlines()
+            if item.strip()
+        }
+    except (OSError, ValueError, subprocess.SubprocessError):
+        remotes = set()
+
+    ordered = (["origin"] if "origin" in remotes else []) + sorted(
+        remote for remote in remotes if remote != "origin"
+    )
+    normalized_by_remote: dict[str, list[str]] = {}
+    for remote in ordered:
+        normalized_urls: list[str] = []
+        for args in (
+            ("remote", "get-url", "--all", remote),
+            ("remote", "get-url", "--push", "--all", remote),
+        ):
+            try:
+                raw_urls = git_runner(workspace_path, *args)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                continue
+            for raw_url in raw_urls.splitlines():
+                normalized = normalize_remote_url(raw_url)
+                if normalized and normalized not in normalized_urls:
+                    normalized_urls.append(normalized)
+        normalized_by_remote[remote] = normalized_urls
+
+    for remote in ordered:
+        for normalized in normalized_by_remote[remote]:
+            repository_id = "remote:" + normalized
+            if is_github_repository_id(repository_id):
+                return repository_id, repository_name
+    for remote in ordered:
+        if normalized_by_remote[remote]:
+            return "remote:" + normalized_by_remote[remote][0], repository_name
+    return "gitdir:" + common_id, repository_name
+
+
 class ProjectIdentityResolver:
     def __init__(
         self,
@@ -262,40 +332,7 @@ class ProjectIdentityResolver:
         return hashlib.sha256(encoded).hexdigest()
 
     def _live_repository(self, workspace_id: str) -> tuple[Optional[str], str]:
-        path = Path(workspace_id)
-        if not path.is_dir():
-            return None, path.name or "Workspace"
-        try:
-            common = self.git_runner(
-                workspace_id,
-                "rev-parse",
-                "--path-format=absolute",
-                "--git-common-dir",
-            )
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return None, path.name or "Workspace"
-        common_id = canonicalize_workspace_path(common)
-        repository_name = Path(common_id).parent.name or path.name or "Repository"
-        try:
-            remotes = [
-                item.strip()
-                for item in self.git_runner(workspace_id, "remote").splitlines()
-                if item.strip()
-            ]
-        except (OSError, ValueError, subprocess.SubprocessError):
-            remotes = []
-        ordered = (["origin"] if "origin" in remotes else []) + sorted(
-            item for item in remotes if item != "origin"
-        )
-        for remote in ordered:
-            try:
-                raw_url = self.git_runner(workspace_id, "remote", "get-url", remote)
-            except (OSError, ValueError, subprocess.SubprocessError):
-                continue
-            normalized = normalize_remote_url(raw_url)
-            if normalized:
-                return "remote:" + normalized, repository_name
-        return "gitdir:" + common_id, repository_name
+        return resolve_live_repository(workspace_id, self.git_runner)
 
     @staticmethod
     def _workspace_repository_id(workspace_id: str) -> str:

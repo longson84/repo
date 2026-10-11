@@ -12,8 +12,10 @@ sys.path.insert(0, str(ROOT / "companion"))
 from project_identity import (  # noqa: E402
     ProjectIdentityResolver,
     canonicalize_workspace_path,
+    is_github_repository_id,
     load_identity_config,
     normalize_remote_url,
+    resolve_live_repository,
     save_identity_config,
 )
 
@@ -79,6 +81,25 @@ class PathAndRemoteTests(unittest.TestCase):
         for value in ("", "not a remote", "/local/repository", "file:///tmp/repo"):
             with self.subTest(value=value):
                 self.assertIsNone(normalize_remote_url(value))
+
+    def test_only_public_github_repository_ids_are_eligible(self):
+        eligible = (
+            "remote:github.com/owner/repo",
+            "remote:GitHub.com/Owner/Repo.git",
+        )
+        ineligible = (
+            None,
+            "",
+            "gitdir:/tmp/repo",
+            "remote:github.example.com/owner/repo",
+            "remote:gitlab.com/owner/repo",
+        )
+        for value in eligible:
+            with self.subTest(value=value):
+                self.assertTrue(is_github_repository_id(value))
+        for value in ineligible:
+            with self.subTest(value=value):
+                self.assertFalse(is_github_repository_id(value))
 
 
 class ConfigTests(unittest.TestCase):
@@ -195,6 +216,69 @@ class ConfigTests(unittest.TestCase):
 
 
 class ResolverTests(unittest.TestCase):
+    def test_github_origin_wins_over_other_remotes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            init_repo(repo)
+            run_git(repo, "remote", "add", "aaa", "git@github.com:owner/other.git")
+            run_git(repo, "remote", "add", "origin", "https://github.com/Owner/Main.git")
+
+            repository_id, _ = resolve_live_repository(str(repo))
+
+            self.assertEqual(repository_id, "remote:github.com/owner/main")
+
+    def test_first_named_github_remote_wins_when_origin_is_not_github(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            init_repo(repo)
+            run_git(repo, "remote", "add", "origin", "https://gitlab.com/owner/main.git")
+            run_git(repo, "remote", "add", "zulu", "git@github.com:owner/zulu.git")
+            run_git(repo, "remote", "add", "alpha", "ssh://git@github.com/Owner/Alpha.git")
+
+            repository_id, _ = resolve_live_repository(str(repo))
+
+            self.assertEqual(repository_id, "remote:github.com/owner/alpha")
+
+    def test_github_push_url_qualifies_remote_with_non_github_fetch_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            init_repo(repo, "https://gitlab.com/owner/repo.git")
+            run_git(
+                repo,
+                "remote",
+                "set-url",
+                "--add",
+                "--push",
+                "origin",
+                "git@github.com:Owner/Repo.git",
+            )
+
+            repository_id, _ = resolve_live_repository(str(repo))
+
+            self.assertEqual(repository_id, "remote:github.com/owner/repo")
+
+    def test_linked_worktree_resolves_through_git_common_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            repo = root / "main"
+            worktree = root / "feature"
+            init_repo(repo, "https://github.com/owner/repo.git")
+            run_git(repo, "worktree", "add", "-b", "feature", str(worktree))
+            self.assertTrue((worktree / ".git").is_file())
+
+            repository_id, _ = resolve_live_repository(str(worktree))
+
+            self.assertEqual(repository_id, "remote:github.com/owner/repo")
+
+    def test_no_usable_remote_falls_back_to_git_common_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            init_repo(repo)
+
+            repository_id, _ = resolve_live_repository(str(repo))
+
+            self.assertTrue(repository_id.startswith("gitdir:"))
+
     def test_linked_worktrees_share_gitdir_repository_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
