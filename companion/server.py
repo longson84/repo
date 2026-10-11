@@ -963,7 +963,9 @@ class State:
         self.scan_path = self.config.parent / "scan.json"
         self.ai_detect_path = self.config.parent / "ai" / "detect.json"
         self.ai_prices_path = self.config.parent / "ai" / "prices.json"
+        self.ai_usage_cache_path = self.config.parent / "ai" / "usage.db"
         self.lock = threading.Lock()
+        self.ai_cache_lock = threading.Lock()
         self.paths = []
         self.stats_cache = {"version": 1, "repos": {}}
         self.scan_cache = {"version": 1, "scannedAt": None, "repos": {}}
@@ -1052,13 +1054,15 @@ class State:
                     raise ValueError(
                         "sessions require string source_id and session_id."
                     )
-        return aggregate_usage(
-            sources=sources,
-            session_ids=session_ids,
-            conversation_keys=conversation_keys,
-            compound_sessions=compound_sessions,
-            prices_path=self.ai_prices_path,
-        )
+        with self.ai_cache_lock:
+            return aggregate_usage(
+                sources=sources,
+                session_ids=session_ids,
+                conversation_keys=conversation_keys,
+                compound_sessions=compound_sessions,
+                prices_path=self.ai_prices_path,
+                cache_path=self.ai_usage_cache_path,
+            )
 
     def get_ai_prices(self):
         data = ai_prices.ensure_prices(self.ai_prices_path)

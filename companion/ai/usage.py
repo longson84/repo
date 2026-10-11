@@ -10,6 +10,7 @@ from .adapters import antigravity, claude_code, codex
 from .catalog import resolve_sources
 from . import prices as prices_mod
 from .sessions import collect_sessions, resolve_conversation_selectors
+from .usage_cache import refresh_usage_cache
 
 WAVE1_USAGE_SUPPORTED = {
     "antigravity.app",
@@ -117,6 +118,20 @@ def _collect_source_usage(source: Mapping[str, Any]) -> dict[str, Any]:
     return {"events": [], "reconciliation": [], "warnings": []}
 
 
+def _usage_descriptors(source: Mapping[str, Any]) -> list[dict[str, Any]]:
+    source_id = source["id"]
+    path = Path(source["path"])
+    if not path.exists():
+        return []
+    if source_id.startswith("antigravity."):
+        return antigravity.usage_files(path, source_id, source["surface"])
+    if source_id == "claude.code":
+        return claude_code.usage_files(path, source_id)
+    if source_id == "codex.home":
+        return codex.usage_files(path, source_id)
+    return []
+
+
 def _sorted_cost(rows: dict[str, dict[str, Any]], key: str) -> list[dict[str, Any]]:
     items = list(rows.values())
     items.sort(key=lambda row: (-float(row.get("cost_usd") or 0), str(row.get(key) or "")))
@@ -180,6 +195,7 @@ def aggregate_usage(
     prices_path: Optional[Path] = None,
     env: Optional[Mapping[str, str]] = None,
     home: Optional[Path] = None,
+    cache_path: Optional[Path] = None,
 ) -> dict:
     """Aggregate usage by date / model / surface / tool and period grains."""
     resolved = resolve_sources(env=env, home=home)
@@ -250,6 +266,34 @@ def aggregate_usage(
         "year": by_year,
     }
 
+    selected_supported = [
+        source
+        for source in resolved
+        if source["id"] in WAVE1_USAGE_SUPPORTED
+        and (wanted is None or source["id"] in wanted)
+    ]
+    cached_batch = None
+    cache_metadata = {
+        "status": "disabled",
+        "hits": 0,
+        "misses": 0,
+        "reparsed": 0,
+        "deleted": 0,
+    }
+    if cache_path is not None:
+        descriptors = [
+            descriptor
+            for source in selected_supported
+            for descriptor in _usage_descriptors(source)
+        ]
+        cached_batch = refresh_usage_cache(
+            Path(cache_path),
+            descriptors,
+            source_ids=[source["id"] for source in selected_supported],
+        )
+        cache_metadata = cached_batch["cache"]
+    cached_consumed = False
+
     for source in resolved:
         sid = source["id"]
         if wanted is not None and sid not in wanted:
@@ -263,7 +307,13 @@ def aggregate_usage(
         if sid not in WAVE1_USAGE_SUPPORTED:
             continue
         scanned.append(sid)
-        batch = _collect_source_usage(source)
+        if cached_batch is not None:
+            if cached_consumed:
+                continue
+            batch = cached_batch
+            cached_consumed = True
+        else:
+            batch = _collect_source_usage(source)
         warnings.extend(batch.get("warnings") or [])
         reconciliation.extend(
             row
@@ -282,6 +332,16 @@ def aggregate_usage(
                 or f"{sid}:{event.get('session_id')}:{event.get('date')}:{index}"
             )
             if event_key in unique_events:
+                previous = unique_events[event_key]
+                for field in (
+                    "input_tokens",
+                    "cached_tokens",
+                    "output_tokens",
+                    "cache_write_tokens",
+                ):
+                    previous[field] = max(
+                        int(previous.get(field) or 0), int(event.get(field) or 0)
+                    )
                 continue
             unique_events[event_key] = event
 
@@ -419,6 +479,7 @@ def aggregate_usage(
             "reconciliation": reconciliation_counts,
         },
         "reconciliation": reconciliation,
+        "cache": cache_metadata,
         "pricing_coverage": pricing_coverage,
         "prices": {
             "currency": table.get("currency") or "USD",

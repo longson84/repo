@@ -7,7 +7,7 @@ import hashlib
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Mapping, Optional
 
 from .base import clip, project_name, summary
 from ..identity import conversation_key, execution_key
@@ -192,75 +192,81 @@ def _fallback_event_id(path: Path, line_number: int) -> str:
     return f"{digest}:{line_number}"
 
 
-def collect_usage(root: Path, source_id: str = "claude.code") -> dict[str, Any]:
-    """Collect unique Claude provider calls plus parser quality warnings."""
-    root = Path(root)
-    projects = root / "projects"
+def usage_files(root: Path, source_id: str = "claude.code") -> list[dict[str, Any]]:
+    projects = Path(root) / "projects"
     if not projects.is_dir():
-        return {"events": [], "reconciliation": [], "warnings": []}
+        return []
     try:
-        files = sorted(projects.rglob("*.jsonl"))
+        files = sorted(path for path in projects.rglob("*.jsonl") if not path.name.startswith("."))
     except OSError:
-        return {"events": [], "reconciliation": [], "warnings": []}
-    events: OrderedDict[str, dict[str, Any]] = OrderedDict()
-    warnings: list[dict[str, Any]] = []
+        return []
+    descriptors = []
     for path in files:
-        if path.name.startswith("."):
-            continue
-        conversation_id, execution_id, execution_kind = _file_identity(path)
-        cwd = None
-        project = _project_from_encoded_dir(path.parent.name)
         try:
-            with path.open(encoding="utf-8", errors="replace") as handle:
-                for line_number, line in enumerate(handle, start=1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        warnings.append(
-                            {
-                                "code": "malformed_json",
-                                "source_id": source_id,
-                                "path": str(path),
-                                "line": line_number,
-                            }
-                        )
-                        continue
-                    if cwd is None and isinstance(row.get("cwd"), str):
-                        cwd = row["cwd"]
-                        project = project_name(cwd) or project
-                    if row.get("type") != "assistant":
-                        continue
-                    message = row.get("message")
-                    if not isinstance(message, dict):
-                        continue
-                    usage = message.get("usage")
-                    if not isinstance(usage, dict):
-                        continue
-                    inp = int(usage.get("input_tokens") or 0)
-                    cached = int(usage.get("cache_read_input_tokens") or 0)
-                    write = int(usage.get("cache_creation_input_tokens") or 0)
-                    out = int(usage.get("output_tokens") or 0)
-                    if inp == 0 and cached == 0 and write == 0 and out == 0:
-                        continue
-                    model = message.get("model") or row.get("model") or "claude-sonnet-4-6"
-                    provider_message_id = message.get("id")
-                    row_uuid = row.get("uuid")
-                    if provider_message_id:
-                        event_id = str(provider_message_id)
-                        event_key = f"claude-code:message:{event_id}"
-                        confidence = "provider"
-                    elif row_uuid:
-                        event_id = str(row_uuid)
-                        event_key = f"claude-code:row:{event_id}"
-                        confidence = "provider"
-                    else:
-                        event_id = _fallback_event_id(path, line_number)
-                        event_key = f"claude-code:record:{source_id}:{event_id}"
-                        confidence = "path-derived"
-                    event = {
+            stat = path.stat()
+        except OSError:
+            continue
+        descriptor = {
+            "source_id": source_id,
+            "path": path,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "parser": PARSER_NAME,
+            "parser_version": PARSER_VERSION,
+        }
+        descriptor["parse"] = lambda item=descriptor: parse_usage_file(item)
+        descriptors.append(descriptor)
+    return descriptors
+
+
+def parse_usage_file(descriptor: Mapping[str, Any]) -> dict[str, Any]:
+    path = Path(descriptor["path"])
+    source_id = str(descriptor["source_id"])
+    conversation_id, execution_id, execution_kind = _file_identity(path)
+    cwd = None
+    project = _project_from_encoded_dir(path.parent.name)
+    events: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    warnings.append({"code": "malformed_json", "source_id": source_id, "path": str(path), "line": line_number})
+                    continue
+                if cwd is None and isinstance(row.get("cwd"), str):
+                    cwd = row["cwd"]
+                    project = project_name(cwd) or project
+                if row.get("type") != "assistant" or not isinstance(row.get("message"), dict):
+                    continue
+                message = row["message"]
+                usage = message.get("usage")
+                if not isinstance(usage, dict):
+                    continue
+                inp = int(usage.get("input_tokens") or 0)
+                cached = int(usage.get("cache_read_input_tokens") or 0)
+                write = int(usage.get("cache_creation_input_tokens") or 0)
+                out = int(usage.get("output_tokens") or 0)
+                if not any((inp, cached, write, out)):
+                    continue
+                model = message.get("model") or row.get("model") or "unknown"
+                provider_message_id = message.get("id")
+                row_uuid = row.get("uuid")
+                if provider_message_id:
+                    event_key = f"claude-code:message:{provider_message_id}"
+                    confidence = "provider"
+                elif row_uuid:
+                    event_key = f"claude-code:row:{row_uuid}"
+                    confidence = "provider"
+                else:
+                    event_key = f"claude-code:record:{source_id}:{_fallback_event_id(path, line_number)}"
+                    confidence = "path-derived"
+                events.append(
+                    {
                         "event_key": event_key,
                         "session_id": conversation_id,
                         "conversation_key": conversation_key(
@@ -284,26 +290,40 @@ def collect_usage(root: Path, source_id: str = "claude.code") -> dict[str, Any]:
                         "parser_version": PARSER_VERSION,
                         "confidence": confidence,
                     }
-                    previous = events.get(event_key)
-                    if previous is not None:
-                        for key in (
-                            "input_tokens",
-                            "cached_tokens",
-                            "output_tokens",
-                            "cache_write_tokens",
-                        ):
-                            event[key] = max(int(previous.get(key) or 0), int(event[key]))
-                        if previous.get("execution_kind") == "child" and execution_kind != "child":
-                            event["execution_key"] = previous["execution_key"]
-                            event["execution_kind"] = "child"
-                    events[event_key] = event
-        except OSError:
-            continue
+                )
+    except OSError:
+        warnings.append({"code": "read_error", "source_id": source_id, "path": str(path)})
+    return merge_usage_batches(
+        [{"events": events, "reconciliation": [], "warnings": warnings}]
+    )
+
+
+def merge_usage_batches(batches: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    events: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    warnings: list[dict[str, Any]] = []
+    for batch in batches:
+        warnings.extend(batch.get("warnings") or [])
+        for event in batch.get("events") or []:
+            event = dict(event)
+            event_key = str(event["event_key"])
+            previous = events.get(event_key)
+            if previous is not None:
+                for key in ("input_tokens", "cached_tokens", "output_tokens", "cache_write_tokens"):
+                    event[key] = max(int(previous.get(key) or 0), int(event.get(key) or 0))
+                if previous.get("execution_kind") == "child" and event.get("execution_kind") != "child":
+                    event["execution_key"] = previous["execution_key"]
+                    event["execution_kind"] = "child"
+            events[event_key] = event
     return {
         "events": list(events.values()),
         "reconciliation": [],
         "warnings": warnings,
     }
+
+
+def collect_usage(root: Path, source_id: str = "claude.code") -> dict[str, Any]:
+    """Collect unique Claude provider calls plus parser quality warnings."""
+    return merge_usage_batches(item["parse"]() for item in usage_files(root, source_id))
 
 
 def iter_usage(root: Path, source_id: str = "claude.code") -> Iterator[dict[str, Any]]:

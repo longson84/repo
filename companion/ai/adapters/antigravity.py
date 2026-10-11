@@ -7,7 +7,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Mapping, Optional
 from urllib.parse import unquote, urlparse
 
 from .base import clip, project_name, summary
@@ -365,65 +365,92 @@ def _project_map(root: Path) -> dict[str, str]:
     return mapping
 
 
-def collect_usage(root: Path, source_id: str, surface: str) -> dict[str, Any]:
-    """Collect normalized per-model-step events and parser warnings."""
+def usage_files(root: Path, source_id: str, surface: str) -> list[dict[str, Any]]:
     root = Path(root)
     conv_dir = root / "conversations"
     if not conv_dir.is_dir():
-        return {"events": [], "reconciliation": [], "warnings": []}
+        return []
     projects = _project_map(root)
     try:
         dbs = sorted(conv_dir.glob("*.db"))
     except OSError:
-        return {"events": [], "reconciliation": [], "warnings": []}
+        return []
+    descriptors = []
+    for db in dbs:
+        try:
+            stat = db.stat()
+        except OSError:
+            continue
+        dependencies = []
+        summaries_db = root / "conversation_summaries.db"
+        transcript = root / "brain" / db.stem / ".system_generated" / "logs" / "transcript_full.jsonl"
+        for dependency in (summaries_db, transcript):
+            try:
+                dependency_stat = dependency.stat()
+            except OSError:
+                continue
+            dependencies.append(
+                {
+                    "path": str(dependency),
+                    "size": dependency_stat.st_size,
+                    "mtime_ns": dependency_stat.st_mtime_ns,
+                }
+            )
+        descriptor = {
+            "source_id": source_id,
+            "path": db,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "parser": PARSER_NAME,
+            "parser_version": PARSER_VERSION,
+            "dependencies": dependencies,
+            "surface": surface,
+            "project": projects.get(db.stem),
+            "root": root,
+        }
+        descriptor["parse"] = lambda item=descriptor: parse_usage_file(item)
+        descriptors.append(descriptor)
+    return descriptors
+
+
+def parse_usage_file(descriptor: Mapping[str, Any]) -> dict[str, Any]:
+    db = Path(descriptor["path"])
+    root = Path(descriptor["root"])
+    source_id = str(descriptor["source_id"])
+    surface = str(descriptor["surface"])
     events: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
-    for db in dbs:
-        session_id = db.stem
-        project = projects.get(session_id)
-        if project is None:
-            transcript = (
-                root
-                / "brain"
-                / session_id
-                / ".system_generated"
-                / "logs"
-                / "transcript_full.jsonl"
-            )
-            _, cwd = _preview_and_cwd_from_transcript(transcript)
-            project = project_name(cwd) or "unknown"
-            projects[session_id] = project
+    session_id = db.stem
+    project = descriptor.get("project")
+    if project is None:
+        transcript = root / "brain" / session_id / ".system_generated" / "logs" / "transcript_full.jsonl"
+        _, cwd = _preview_and_cwd_from_transcript(transcript)
+        project = project_name(cwd) or "unknown"
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return {"events": [], "reconciliation": [], "warnings": [{"code": "read_error", "source_id": source_id}]}
+    try:
         try:
-            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            rows = con.execute(
+                "SELECT idx, metadata FROM steps WHERE step_type = ? AND metadata IS NOT NULL",
+                (STEP_TYPE_MODEL,),
+            ).fetchall()
         except sqlite3.Error:
-            continue
-        try:
-            try:
-                rows = con.execute(
-                    """
-                    SELECT idx, metadata FROM steps
-                    WHERE step_type = ? AND metadata IS NOT NULL
-                    """,
-                    (STEP_TYPE_MODEL,),
-                ).fetchall()
-            except sqlite3.Error:
-                continue
-        finally:
-            con.close()
+            rows = []
+    finally:
+        con.close()
+    try:
+        fallback_date = datetime.fromtimestamp(db.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%d")
+    except OSError:
         fallback_date = None
-        try:
-            fallback_date = datetime.fromtimestamp(
-                db.stat().st_mtime, tz=timezone.utc
-            ).strftime("%Y-%m-%d")
-        except OSError:
-            pass
-        for step_index, meta in rows:
-            if not isinstance(meta, (bytes, bytearray)):
-                continue
-            parsed = parse_usage_metadata(bytes(meta))
-            if not parsed:
-                continue
-            event = {
+    for step_index, meta in rows:
+        if not isinstance(meta, (bytes, bytearray)):
+            continue
+        parsed = parse_usage_metadata(bytes(meta))
+        if not parsed:
+            continue
+        event = {
                 "event_key": f"antigravity:{session_id}:step:{step_index}",
                 "session_id": session_id,
                 "conversation_key": conversation_key("antigravity", session_id),
@@ -446,19 +473,24 @@ def collect_usage(root: Path, source_id: str, surface: str) -> dict[str, Any]:
                 "parser": PARSER_NAME,
                 "parser_version": PARSER_VERSION,
                 "confidence": "provider",
-            }
-            events.append(event)
-            component_total = event["thinking_tokens"] + event["visible_tokens"]
-            if component_total and component_total != event["output_tokens"]:
-                warnings.append(
-                    {
-                        "code": "output_invariant_mismatch",
-                        "source_id": source_id,
-                        "session_id": session_id,
-                        "event_key": event["event_key"],
-                    }
-                )
+        }
+        events.append(event)
+        component_total = event["thinking_tokens"] + event["visible_tokens"]
+        if component_total and component_total != event["output_tokens"]:
+            warnings.append(
+                {"code": "output_invariant_mismatch", "source_id": source_id, "session_id": session_id, "event_key": event["event_key"]}
+            )
     return {"events": events, "reconciliation": [], "warnings": warnings}
+
+
+def collect_usage(root: Path, source_id: str, surface: str) -> dict[str, Any]:
+    """Collect normalized per-model-step events and parser warnings."""
+    result: dict[str, list[dict[str, Any]]] = {"events": [], "reconciliation": [], "warnings": []}
+    for descriptor in usage_files(root, source_id, surface):
+        batch = descriptor["parse"]()
+        for key in result:
+            result[key].extend(batch[key])
+    return result
 
 
 def iter_usage(

@@ -281,24 +281,68 @@ def _normalized_tokens(raw: Mapping[str, Any]) -> dict[str, int]:
     }
 
 
-def collect_usage(root: Path, source_id: str = "codex.home") -> dict[str, Any]:
-    """Collect per-call usage and per-execution cumulative reconciliation."""
+def usage_files(root: Path, source_id: str = "codex.home") -> list[dict[str, Any]]:
     all_meta = collect_metadata(Path(root), source_id)
+    descriptors = []
+    for execution_id, meta in all_meta.items():
+        path = Path(meta["path"])
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        dependencies = []
+        parent_id = meta.get("parent_id")
+        while parent_id and parent_id in all_meta:
+            parent_path = Path(all_meta[parent_id]["path"])
+            try:
+                parent_stat = parent_path.stat()
+            except OSError:
+                break
+            dependencies.append(
+                {
+                    "path": str(parent_path),
+                    "size": parent_stat.st_size,
+                    "mtime_ns": parent_stat.st_mtime_ns,
+                }
+            )
+            parent_id = all_meta[parent_id].get("parent_id")
+        descriptor = {
+            "source_id": source_id,
+            "path": path,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "parser": PARSER_NAME,
+            "parser_version": PARSER_VERSION,
+            "dependencies": dependencies,
+            "execution_id": execution_id,
+            "metadata": meta,
+            "all_metadata": all_meta,
+        }
+        descriptor["parse"] = lambda item=descriptor: parse_usage_file(item)
+        descriptors.append(descriptor)
+    return descriptors
+
+
+def parse_usage_file(descriptor: Mapping[str, Any]) -> dict[str, Any]:
+    """Parse one rollout using the already-resolved complete metadata graph."""
+    source_id = str(descriptor["source_id"])
+    execution_id = str(descriptor["execution_id"])
+    meta = descriptor["metadata"]
+    all_meta = descriptor["all_metadata"]
     events: list[dict[str, Any]] = []
     reconciliation: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
-    for execution_id, meta in all_meta.items():
-        path = Path(meta["path"])
-        root_id = str(meta.get("root_id") or execution_id)
-        model = "unknown"
-        cwd = meta.get("cwd")
-        project = project_name(cwd) or "unknown"
-        event_sum: Counter[str] = Counter()
-        latest_total: Optional[dict[str, int]] = None
-        ordinal = 0
-        try:
-            with path.open(encoding="utf-8", errors="replace") as handle:
-                for line_number, line in enumerate(handle, start=1):
+    path = Path(meta["path"])
+    root_id = str(meta.get("root_id") or execution_id)
+    model = "unknown"
+    cwd = meta.get("cwd")
+    project = project_name(cwd) or "unknown"
+    event_sum: Counter[str] = Counter()
+    latest_total: Optional[dict[str, int]] = None
+    ordinal = 0
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line_number, line in enumerate(handle, start=1):
                     line = line.strip()
                     if not line:
                         continue
@@ -362,49 +406,62 @@ def collect_usage(root: Path, source_id: str = "codex.home") -> dict[str, Any]:
                             "confidence": "provider",
                         }
                     )
-        except OSError:
-            warnings.append(
-                {
-                    "code": "read_error",
-                    "source_id": source_id,
-                    "execution_id": execution_id,
-                }
-            )
-            continue
-        summed = {field: int(event_sum.get(field) or 0) for field in TOKEN_FIELDS}
-        if latest_total is None:
-            status = "unavailable"
-            difference = None
-        else:
-            difference = {
-                field: summed[field] - int(latest_total.get(field) or 0)
-                for field in TOKEN_FIELDS
-            }
-            status = "matched" if not any(difference.values()) else "different"
-        reconciliation.append(
+    except OSError:
+        warnings.append(
             {
+                "code": "read_error",
+                "source_id": source_id,
                 "execution_id": execution_id,
-                "execution_key": execution_key(source_id, execution_id),
-                "conversation_key": conversation_key("codex", root_id),
-                "event_sum": summed,
-                "cumulative_total": latest_total,
-                "difference": difference,
-                "status": status,
             }
         )
-        if meta.get("warning"):
-            warnings.append(
-                {
-                    "code": str(meta["warning"]),
-                    "source_id": source_id,
-                    "execution_id": execution_id,
-                }
-            )
+    summed = {field: int(event_sum.get(field) or 0) for field in TOKEN_FIELDS}
+    if latest_total is None:
+        status = "unavailable"
+        difference = None
+    else:
+        difference = {
+            field: summed[field] - int(latest_total.get(field) or 0)
+            for field in TOKEN_FIELDS
+        }
+        status = "matched" if not any(difference.values()) else "different"
+    reconciliation.append(
+        {
+            "execution_id": execution_id,
+            "execution_key": execution_key(source_id, execution_id),
+            "conversation_key": conversation_key("codex", root_id),
+            "event_sum": summed,
+            "cumulative_total": latest_total,
+            "difference": difference,
+            "status": status,
+        }
+    )
+    if meta.get("warning"):
+        warnings.append(
+            {
+                "code": str(meta["warning"]),
+                "source_id": source_id,
+                "execution_id": execution_id,
+            }
+        )
     return {
         "events": events,
         "reconciliation": reconciliation,
         "warnings": warnings,
     }
+
+
+def collect_usage(root: Path, source_id: str = "codex.home") -> dict[str, Any]:
+    """Collect per-call usage and per-execution cumulative reconciliation."""
+    result: dict[str, list[dict[str, Any]]] = {
+        "events": [],
+        "reconciliation": [],
+        "warnings": [],
+    }
+    for descriptor in usage_files(root, source_id):
+        batch = descriptor["parse"]()
+        for key in result:
+            result[key].extend(batch[key])
+    return result
 
 
 def iter_usage(root: Path, source_id: str = "codex.home") -> Iterator[dict[str, Any]]:

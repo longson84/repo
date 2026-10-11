@@ -427,6 +427,38 @@ class ClaudeCodexUsageTests(unittest.TestCase):
 
 
 class AggregateUsageTests(unittest.TestCase):
+    def test_aggregate_reuses_incremental_cache_on_second_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp)
+            transcript = home / ".claude" / "projects" / "demo" / "session.jsonl"
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "sessionId": "session",
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "message": {
+                            "id": "message",
+                            "model": "claude-sonnet-4-6",
+                            "usage": {"input_tokens": 4, "output_tokens": 2},
+                        },
+                    }
+                )
+                + "\n"
+            )
+            cache_path = home / "usage.db"
+            first = usage_mod.aggregate_usage(
+                sources=["claude.code"], home=home, env={}, cache_path=cache_path
+            )
+            second = usage_mod.aggregate_usage(
+                sources=["claude.code"], home=home, env={}, cache_path=cache_path
+            )
+
+            self.assertEqual(first["cache"]["misses"], 1)
+            self.assertEqual(second["cache"]["hits"], 1)
+            self.assertEqual(second["totals"]["input_tokens"], 4)
+
     def test_aggregate_reports_partial_pricing_coverage(self):
         source = {"id": "codex.home", "path": "/synthetic", "surface": "unknown"}
         events = [

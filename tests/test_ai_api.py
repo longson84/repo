@@ -98,6 +98,8 @@ class AiApiTests(unittest.TestCase):
         self.assertIn("totals", usage)
         self.assertIn("by_model", usage)
         self.assertIn("caveats", usage)
+        self.assertIn(usage["cache"]["status"], {"rebuilt", "ready"})
+        self.assertIn("hits", usage["cache"])
 
     def test_usage_api_accepts_conversation_keys_and_compound_sessions(self):
         claude_root = self.root / "claude-home"
