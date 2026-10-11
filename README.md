@@ -28,7 +28,7 @@ python3 companion/server.py --root ~/Projects --root /another/folder --ui
 
 ## Use
 
-1. **Manage tracked repos** — discover under an approved folder, then tick what to track (applies immediately).
+1. **Manage tracked repos** — discover under an approved folder, choose tracked workspaces, and group repositories into logical projects.
 2. **Scan** — refresh sync status and portfolio stats for tracked repos.
 3. **Stats** — combined activity chart and repo comparison board.
 4. **AI** (`#/ai`) — detect local AI discussion stores (Antigravity, Claude, Codex, Cursor).
@@ -82,6 +82,17 @@ Machine-local grouping rules live in `.repo-local/project-identities.json`. For 
 ```
 
 The companion validates this file and writes it with owner-only permissions. Changing a rule invalidates derived scan/stat caches. AI usage events keep their recorded workspace path in the rebuildable cache, so aliases are reapplied immediately without reparsing transcript content. In **Stats**, expand project → repository → workspace to inspect Git attribution. In **AI → Tokens**, expand project/model rows and open **Attribution quality** to inspect configured, path-based, and unresolved workspace evidence.
+
+### Manage project grouping
+
+Open **Manage tracked repos** to edit grouping without touching the JSON file:
+
+- The **Group** checkbox selects a canonical repository for a bulk project action. Multiple clones or worktrees of the same repository select together.
+- The **Tracked** switch controls whether that workspace appears in local reports. Grouping does not change tracking, and tracking does not change grouping.
+- **Group selected** can assign repositories to an existing project, create a new project, or make them **Standalone** again.
+- Configured project cards support rename, ungroup, and delete. Rename preserves the stable project ID. Delete is disabled when historical workspace aliases or primary-workspace mappings must be retained; ungrouping remains available for live repositories.
+
+Project changes persist locally in `.repo-local/project-identities.json`. Writes use a configuration fingerprint so a stale browser tab cannot overwrite a newer edit. After a save, the dashboard refreshes repository statistics. Previously loaded AI totals are cleared because their project attribution is stale; open **AI → Tokens** and run **Aggregate** again. If the refresh fails, the grouping remains saved and the normal **Scan** button retries the report refresh.
 
 ## What Scan does
 

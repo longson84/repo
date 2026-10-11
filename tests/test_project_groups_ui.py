@@ -82,7 +82,9 @@ process.stdout.write(JSON.stringify(output));
             projects["general"]["primary_workspaces"], {"repo:one": "/work/one"}
         )
 
-    def test_standalone_removes_selected_membership_and_prunes_only_plain_empty_project(self):
+    def test_standalone_removes_selected_membership_and_prunes_only_plain_empty_project(
+        self,
+    ):
         result = self.evaluate(
             "(() => { const input={version:1,projects:["
             "{id:'plain',name:'Plain',repositories:['repo:one'],primary_workspaces:{},workspace_aliases:[]},"
@@ -93,13 +95,17 @@ process.stdout.write(JSON.stringify(output));
         )
 
         self.assertTrue(result["beforeUnchanged"])
-        self.assertEqual([project["id"] for project in result["output"]["projects"]], ["history"])
+        self.assertEqual(
+            [project["id"] for project in result["output"]["projects"]], ["history"]
+        )
         history = result["output"]["projects"][0]
         self.assertEqual(history["repositories"], ["repo:hidden"])
         self.assertEqual(history["primary_workspaces"], {})
         self.assertEqual(history["workspace_aliases"], ["/old/two"])
 
-    def test_rename_preserves_identity_fields_and_delete_protects_advanced_mappings(self):
+    def test_rename_preserves_identity_fields_and_delete_protects_advanced_mappings(
+        self,
+    ):
         result = self.evaluate(
             "(() => { const input={version:1,projects:["
             "{id:'alpha',name:'Alpha',repositories:['repo:a'],"
@@ -116,9 +122,7 @@ process.stdout.write(JSON.stringify(output));
         self.assertEqual(result["renamed"]["id"], "alpha")
         self.assertEqual(result["renamed"]["name"], "Alpha Prime")
         self.assertEqual(result["renamed"]["repositories"], ["repo:a"])
-        self.assertEqual(
-            result["renamed"]["primary_workspaces"], {"repo:a": "/work/a"}
-        )
+        self.assertEqual(result["renamed"]["primary_workspaces"], {"repo:a": "/work/a"})
         self.assertEqual(result["renamed"]["workspace_aliases"], ["/old/a"])
         self.assertIn("historical", result["protectedMessage"].lower())
         self.assertEqual(result["deletedIds"], ["alpha"])

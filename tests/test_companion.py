@@ -73,7 +73,9 @@ class CompanionTests(unittest.TestCase):
         self.assertTrue(inventory[0]["repository_id"].startswith("gitdir:"))
         self.assertEqual(inventory[0]["identity_confidence"], "git")
 
-    def test_saving_identity_config_preserves_selection_and_invalidates_only_caches(self):
+    def test_saving_identity_config_preserves_selection_and_invalidates_only_caches(
+        self,
+    ):
         api = self.api()
         repo = self.repo("configured")
         settings = self.root / "settings.json"
@@ -111,7 +113,9 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual(state.identity_path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(state.workspace_inventory()[0]["project_id"], "configured")
 
-    def test_identity_payload_refreshes_external_changes_and_invalidates_derived_caches(self):
+    def test_identity_payload_refreshes_external_changes_and_invalidates_derived_caches(
+        self,
+    ):
         api = self.api()
         state = api.State([self.root], self.root / "settings.json")
         original_fingerprint = state.identity_resolver.fingerprint()
@@ -168,12 +172,15 @@ class CompanionTests(unittest.TestCase):
         settings = self.root / "settings.json"
         settings.write_text(json.dumps({"paths": [str(repo.resolve())]}) + "\n")
         identity_path = self.root / "project-identities.json"
-        identity_text = json.dumps(
-            {
-                "version": 1,
-                "projects": [{"id": "migration", "name": "Migration"}],
-            }
-        ) + "\n"
+        identity_text = (
+            json.dumps(
+                {
+                    "version": 1,
+                    "projects": [{"id": "migration", "name": "Migration"}],
+                }
+            )
+            + "\n"
+        )
         identity_path.write_text(identity_text)
         (self.root / "stats.json").write_text(
             json.dumps({"version": 1, "repos": {str(repo): {"old": True}}})

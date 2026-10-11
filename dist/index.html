@@ -1413,6 +1413,105 @@
       .repo-choice input {
         flex-shrink: 0;
       }
+      .project-manager-actions {
+        margin: 0 0 24px;
+      }
+      .project-manager-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 14px;
+        align-items: center;
+        padding: 14px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .project-manager-row:last-child {
+        border-bottom: 0;
+      }
+      .project-row-meta {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        gap: 4px;
+        overflow-wrap: anywhere;
+      }
+      .project-row-actions,
+      .project-bulk-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .project-bulk-toolbar {
+        justify-content: space-between;
+        margin: 14px 0;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #f5f7f1;
+      }
+      .project-group-select,
+      .project-track-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .project-editor,
+      .configured-project-card {
+        margin: 12px 0;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: white;
+        overflow-wrap: anywhere;
+      }
+      .project-editor {
+        display: grid;
+        gap: 9px;
+        background: #f8faf4;
+      }
+      .project-editor input,
+      .project-editor select {
+        width: 100%;
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 10px;
+        background: white;
+      }
+      .configured-project-list {
+        display: grid;
+        gap: 10px;
+      }
+      .configured-project-card {
+        margin: 0;
+      }
+      .configured-project-card p {
+        margin: 7px 0;
+      }
+      @media (max-width: 760px) {
+        .drawer {
+          width: 100%;
+          padding: 22px 16px;
+        }
+        .choice-toolbar,
+        .project-manager-row,
+        .project-bulk-toolbar {
+          align-items: stretch;
+          flex-direction: column;
+        }
+        .project-manager-row {
+          display: flex;
+        }
+        .project-row-actions {
+          width: 100%;
+        }
+        .project-row-actions .btn {
+          flex: 1 1 auto;
+        }
+      }
       .actions {
         flex-wrap: wrap;
       }

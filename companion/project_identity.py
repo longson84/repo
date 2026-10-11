@@ -95,15 +95,15 @@ def _normalize_repository_id(value: Any) -> str:
     if repository_id.startswith("remote:"):
         portable = repository_id[len("remote:") :]
         if "@" in portable or "?" in portable or "#" in portable:
-            raise ValueError("repository identity must not contain credentials or secrets")
+            raise ValueError(
+                "repository identity must not contain credentials or secrets"
+            )
         normalized = normalize_remote_url("https://" + portable)
         if not normalized:
             raise ValueError("invalid remote repository identity")
         return "remote:" + normalized
     if repository_id.startswith("gitdir:"):
-        return "gitdir:" + canonicalize_workspace_path(
-            repository_id[len("gitdir:") :]
-        )
+        return "gitdir:" + canonicalize_workspace_path(repository_id[len("gitdir:") :])
     raise ValueError("repository identity must start with remote: or gitdir:")
 
 
@@ -165,7 +165,9 @@ def _normalize_config(payload: Mapping[str, Any], *, strict: bool) -> dict[str, 
             key = alias.casefold()
             owner = alias_owners.get(key)
             if strict and owner and owner != project_id:
-                raise ValueError(f"workspace alias {alias} belongs to multiple projects")
+                raise ValueError(
+                    f"workspace alias {alias} belongs to multiple projects"
+                )
             alias_owners.setdefault(key, project_id)
             if alias not in aliases:
                 aliases.append(alias)
@@ -174,7 +176,9 @@ def _normalize_config(payload: Mapping[str, Any], *, strict: bool) -> dict[str, 
         for raw_repository, raw_path in raw_primaries.items():
             repository_id = _normalize_repository_id(raw_repository)
             if repository_id not in repositories:
-                raise ValueError("primary workspace repository must belong to its project")
+                raise ValueError(
+                    "primary workspace repository must belong to its project"
+                )
             primaries[repository_id] = canonicalize_workspace_path(raw_path)
 
         normalized_projects.append(
@@ -252,9 +256,9 @@ class ProjectIdentityResolver:
                 self._folded_aliases.setdefault(alias.casefold(), []).append(project)
 
     def fingerprint(self) -> str:
-        encoded = json.dumps(
-            self.config, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        encoded = json.dumps(self.config, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
         return hashlib.sha256(encoded).hexdigest()
 
     def _live_repository(self, workspace_id: str) -> tuple[Optional[str], str]:
@@ -295,7 +299,9 @@ class ProjectIdentityResolver:
 
     @staticmethod
     def _workspace_repository_id(workspace_id: str) -> str:
-        digest = hashlib.sha256(workspace_id.casefold().encode("utf-8")).hexdigest()[:20]
+        digest = hashlib.sha256(workspace_id.casefold().encode("utf-8")).hexdigest()[
+            :20
+        ]
         return "workspace:" + digest
 
     @staticmethod

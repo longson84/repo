@@ -45,14 +45,18 @@ function cloneProjectConfig(config) {
 }
 
 function uniqueRepositoryIds(repositoryIds) {
-  return [...new Set((repositoryIds || []).filter((repositoryId) => typeof repositoryId === 'string'))];
+  return [
+    ...new Set((repositoryIds || []).filter((repositoryId) => typeof repositoryId === 'string')),
+  ];
 }
 
 function removeRepositoryMemberships(config, repositoryIds) {
   const selected = new Set(uniqueRepositoryIds(repositoryIds));
   const movedPrimaries = {};
   for (const project of config.projects) {
-    project.repositories = project.repositories.filter((repositoryId) => !selected.has(repositoryId));
+    project.repositories = project.repositories.filter(
+      (repositoryId) => !selected.has(repositoryId),
+    );
     for (const repositoryId of selected) {
       if (Object.prototype.hasOwnProperty.call(project.primary_workspaces, repositoryId)) {
         movedPrimaries[repositoryId] = project.primary_workspaces[repositoryId];

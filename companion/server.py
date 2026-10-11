@@ -997,9 +997,7 @@ def _sum_period_series(repositories, field):
         for row in repository.get(field) or []:
             if isinstance(row, dict) and row.get("period") is not None:
                 totals[str(row["period"])] += int(row.get("commits") or 0)
-    return [
-        {"period": period, "commits": totals[period]} for period in sorted(totals)
-    ]
+    return [{"period": period, "commits": totals[period]} for period in sorted(totals)]
 
 
 def _aggregate_project_stats(project_id, project_name, repositories):
@@ -1020,7 +1018,9 @@ def _aggregate_project_stats(project_id, project_name, repositories):
         "name": project_name,
         "repositories": repositories,
         "repository_count": len(repositories),
-        "workspace_count": sum(len(item.get("workspaces") or []) for item in repositories),
+        "workspace_count": sum(
+            len(item.get("workspaces") or []) for item in repositories
+        ),
         "identity_warnings": [
             warning
             for repository in repositories
@@ -1031,7 +1031,9 @@ def _aggregate_project_stats(project_id, project_name, repositories):
         values = [item.get(field) for item in repositories]
         result[field] = sum(int(value or 0) for value in values) if values else 0
     for field in loc_fields:
-        values = [item.get(field) for item in repositories if item.get(field) is not None]
+        values = [
+            item.get(field) for item in repositories if item.get(field) is not None
+        ]
         result[field] = sum(int(value) for value in values) if values else None
     for field in line_fields:
         bucket = {"additions": 0, "deletions": 0, "net": 0}
@@ -1059,16 +1061,17 @@ def _aggregate_project_stats(project_id, project_name, repositories):
     result["linesByDate"] = lines_by_date
     result["contributorCount"] = len(contributors)
     result["topContributors"] = [
-        {"name": name, "commits": count}
-        for name, count in contributors.most_common(5)
+        {"name": name, "commits": count} for name, count in contributors.most_common(5)
     ]
     for field in ("commitsByDay", "commitsByWeek", "commitsByMonth", "commitsByYear"):
         result[field] = _sum_period_series(repositories, field)
-    result["weeklyCommits"] = [
-        row["commits"] for row in result["commitsByWeek"][-12:]
+    result["weeklyCommits"] = [row["commits"] for row in result["commitsByWeek"][-12:]]
+    first_values = [
+        item.get("firstCommitAt") for item in repositories if item.get("firstCommitAt")
     ]
-    first_values = [item.get("firstCommitAt") for item in repositories if item.get("firstCommitAt")]
-    last_values = [item.get("lastCommitAt") for item in repositories if item.get("lastCommitAt")]
+    last_values = [
+        item.get("lastCommitAt") for item in repositories if item.get("lastCommitAt")
+    ]
     result["firstCommitAt"] = min(first_values) if first_values else None
     result["lastCommitAt"] = max(last_values) if last_values else None
     return result
@@ -1150,7 +1153,12 @@ class State:
     def decorate_workspace(self, item):
         path = str(item.get("path") or "")
         identity = self.identity_resolver.resolve(path)
-        return {**item, **identity, "path": identity["workspace_id"], "name": item.get("name") or identity["workspace_name"]}
+        return {
+            **item,
+            **identity,
+            "path": identity["workspace_id"],
+            "name": item.get("name") or identity["workspace_name"],
+        }
 
     def workspace_inventory(self):
         return [
@@ -1572,7 +1580,9 @@ class State:
             projects.append(
                 _aggregate_project_stats(project_id, group["name"], repositories)
             )
-        projects.sort(key=lambda item: (item["project_name"].casefold(), item["project_id"]))
+        projects.sort(
+            key=lambda item: (item["project_name"].casefold(), item["project_id"])
+        )
         self.stats_cache["projects"] = projects
         self.save_stats_cache()
         return {"repositories": workspace_stats, "projects": projects}
@@ -1696,9 +1706,7 @@ class Handler(BaseHTTPRequestHandler):
                 }
             elif self.command == "POST" and self.path == "/api/stats":
                 if data.get("all"):
-                    canonical = state.canonical_stats(
-                        refresh=bool(data.get("refresh"))
-                    )
+                    canonical = state.canonical_stats(refresh=bool(data.get("refresh")))
                     response = {
                         "machine": socket.gethostname(),
                         **canonical,

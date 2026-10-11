@@ -1142,7 +1142,9 @@ function modelUsageRows(list, periodTotals, forceExpanded = false) {
       const projectRows = expanded
         ? sortAiUsageRows(model.by_project || [], aiProjectLabel)
             .map(
-              (project) => `<tr class="ai-model-project-row" data-project-id="${esc(project.project_id || 'unattributed')}">
+              (
+                project,
+              ) => `<tr class="ai-model-project-row" data-project-id="${esc(project.project_id || 'unattributed')}">
                 <td><span class="ai-model-indent">↳</span>${esc(aiProjectLabel(project))}</td>
                 ${usageCells(project, usageTokenVolume(model))}
               </tr>`,
@@ -1162,7 +1164,8 @@ function attributionQualityHtml(quality, workspaces) {
   const warnings = quality?.identity_warnings || [];
   const warningRows = warnings
     .map(
-      (warning) => `<li><span class="mono">${esc(warning.workspace_id || 'Unattributed')}</span> · ${esc(warning.code || 'identity_warning')}</li>`,
+      (warning) =>
+        `<li><span class="mono">${esc(warning.workspace_id || 'Unattributed')}</span> · ${esc(warning.code || 'identity_warning')}</li>`,
     )
     .join('');
   const configuredWorkspaces = (workspaces || []).filter(
@@ -1170,7 +1173,8 @@ function attributionQualityHtml(quality, workspaces) {
   );
   const configuredRows = configuredWorkspaces
     .map(
-      (workspace) => `<li><span class="mono">${esc(workspace.workspace_id)}</span> · configured</li>`,
+      (workspace) =>
+        `<li><span class="mono">${esc(workspace.workspace_id)}</span> · configured</li>`,
     )
     .join('');
   return `<details class="ai-attribution-quality">
@@ -1373,8 +1377,7 @@ function paintAiTokensPanel() {
       <select id="aiUsageGroup">
         ${groupOptions}
       </select>
-      ${projectControls}
-      ${modelControls}
+      ${projectControls} ${modelControls}
       <button class="btn primary" id="aiUsageBtn" ${!paired || aiBusy ? 'disabled' : ''}>
         ${aiBusy && aiTab === 'tokens' ? 'Aggregating…' : '<span class="arrow">⟳</span> Aggregate'}
       </button>
@@ -1385,13 +1388,11 @@ function paintAiTokensPanel() {
       <table class="ai-table">
         <thead>
           <tr>
-            ${aiUsageHeaderCell(firstCol, 'label')}
-            ${aiUsageHeaderCell('Input', 'input_tokens')}
+            ${aiUsageHeaderCell(firstCol, 'label')} ${aiUsageHeaderCell('Input', 'input_tokens')}
             ${aiUsageHeaderCell('Cached', 'cached_tokens')}
             ${aiUsageHeaderCell('Output', 'output_tokens')}
             ${aiUsageHeaderCell('Cache write', 'cache_write_tokens')}
-            ${aiUsageHeaderCell('Total', 'total')}
-            ${aiUsageHeaderCell('Share', 'share')}
+            ${aiUsageHeaderCell('Total', 'total')} ${aiUsageHeaderCell('Share', 'share')}
             ${aiUsageHeaderCell('Unique calls', 'events')}
           </tr>
         </thead>
@@ -1399,8 +1400,7 @@ function paintAiTokensPanel() {
         ${totalRow ? `<tfoot>${totalRow}</tfoot>` : ''}
       </table>
     </div>
-    ${qualityNotes}
-    ${attributionQuality}
+    ${qualityNotes} ${attributionQuality}
     ${caveats
       ? `<div class="callout" style="margin-top: 18px"><strong>Caveats</strong><ul style="margin: 8px 0 0; padding-left: 18px">${caveats}</ul></div>`
       : ''}
@@ -1620,9 +1620,7 @@ function paintAi() {
       const visible = (selected?.by_project || []).filter(
         (item) => !query || aiProjectLabel(item).toLowerCase().includes(query),
       );
-      const keys = visible.map((item) =>
-        aiProjectExpansionKey(item.project_id || 'unattributed'),
-      );
+      const keys = visible.map((item) => aiProjectExpansionKey(item.project_id || 'unattributed'));
       const expand = keys.some((key) => !aiUsageExpandedProjects.has(key));
       keys.forEach((key) => {
         if (expand) aiUsageExpandedProjects.add(key);
@@ -2115,8 +2113,7 @@ function statsHierarchyRows(projects, forceExpanded = false) {
         .sort(compareStatsHierarchy)
         .map((repository) => {
           const repositoryId = repository.repository_id || 'unattributed';
-          const repositoryExpanded =
-            forceExpanded || statsExpandedRepositories.has(repositoryId);
+          const repositoryExpanded = forceExpanded || statsExpandedRepositories.has(repositoryId);
           const repositoryRow = `<tr class="stats-repository-row" data-repository-id="${esc(repositoryId)}">
             <td><span class="stats-tree-indent">↳</span><button type="button" class="stats-tree-toggle" data-stats-repository-toggle="${esc(repositoryId)}" aria-expanded="${repositoryExpanded}">${repositoryExpanded ? '▾' : '▸'}</button>${esc(repository.repository_name || repository.name || 'Repository')}</td>
             ${numberCell(repository.commits7d)}${numberCell(repository.commits30d)}${numberCell(repository.commitCount)}
@@ -2845,30 +2842,37 @@ function projectManagerRows(choices, selectedRepositoryIds, identityConfig) {
       const trackingLabel = `Track ${row.workspace_name || row.path}`;
       return /* HTML */ `
         <div class="project-manager-row" data-current-project="${esc(projectId)}">
-          <label class="project-group-select">
-            <input
-              type="checkbox"
-              data-group-repository="${esc(row.repository_id || '')}"
-              ${row.repository_id && selectedRepositoryIds.has(row.repository_id) ? 'checked' : ''}
-              aria-label="${esc(groupingLabel)}"
-              ${groupingDisabled ? 'disabled' : ''}
-            />
-          </label>
           <div class="project-row-meta">
             <strong>${esc(row.workspace_name || row.path)}</strong>
             <span class="small">${esc(row.path)}</span>
-            <span class="small">Repository: ${esc(row.repository_name || 'Identity unavailable')}</span>
+            <span class="small">
+              Repository: ${esc(row.repository_name || 'Identity unavailable')}
+            </span>
             <span class="small">Project: ${esc(projectName)}</span>
           </div>
-          <label class="project-track-toggle">
-            <input
-              type="checkbox"
-              data-track-workspace="${esc(row.workspace_id)}"
-              aria-label="${esc(trackingLabel)}"
-              ${row.tracked ? 'checked' : ''}
-            />
-            <span>Tracked</span>
-          </label>
+          <div class="project-row-actions">
+            <label class="project-group-select">
+              <input
+                type="checkbox"
+                data-group-repository="${esc(row.repository_id || '')}"
+                ${row.repository_id && selectedRepositoryIds.has(row.repository_id)
+                  ? 'checked'
+                  : ''}
+                aria-label="${esc(groupingLabel)}"
+                ${groupingDisabled ? 'disabled' : ''}
+              />
+              <span>Group</span>
+            </label>
+            <label class="project-track-toggle">
+              <input
+                type="checkbox"
+                data-track-workspace="${esc(row.workspace_id)}"
+                aria-label="${esc(trackingLabel)}"
+                ${row.tracked ? 'checked' : ''}
+              />
+              <span>Tracked</span>
+            </label>
+          </div>
         </div>
       `;
     })
@@ -2884,17 +2888,25 @@ function projectBulkEditor(config, selectedRepositoryIds, mode = 'existing') {
       <strong>${count} ${count === 1 ? 'repository' : 'repositories'} selected</strong>
       <label class="small" for="projectMode">Assignment</label>
       <select id="projectMode">
-        <option value="existing" ${activeMode === 'existing' ? 'selected' : ''}>Existing project</option>
+        <option value="existing" ${activeMode === 'existing' ? 'selected' : ''}>
+          Existing project
+        </option>
         <option value="new" ${activeMode === 'new' ? 'selected' : ''}>New project</option>
-        <option value="standalone" ${activeMode === 'standalone' ? 'selected' : ''}>Standalone</option>
+        <option value="standalone" ${activeMode === 'standalone' ? 'selected' : ''}>
+          Standalone
+        </option>
       </select>
-      <label class="small" for="projectTarget" ${activeMode === 'existing' ? '' : 'hidden'}>Project</label>
+      <label class="small" for="projectTarget" ${activeMode === 'existing' ? '' : 'hidden'}>
+        Project
+      </label>
       <select id="projectTarget" ${activeMode === 'existing' ? '' : 'hidden'}>
         ${projects
           .map((project) => `<option value="${esc(project.id)}">${esc(project.name)}</option>`)
           .join('')}
       </select>
-      <label class="small" for="projectName" ${activeMode === 'new' ? '' : 'hidden'}>New project name</label>
+      <label class="small" for="projectName" ${activeMode === 'new' ? '' : 'hidden'}>
+        New project name
+      </label>
       <input id="projectName" ${activeMode === 'new' ? '' : 'hidden'} autocomplete="off" />
       <div class="project-row-actions">
         <button class="btn primary" type="button" id="projectApply">Apply</button>
@@ -2927,20 +2939,35 @@ function configuredProjectCards(config, visibleRepositoryIds) {
             <strong>${esc(project.name)}</strong>
             <p class="small">
               ${repositories.length} ${repositories.length === 1 ? 'repository' : 'repositories'} ·
-              ${visibleWorkspaceCount} visible ${visibleWorkspaceCount === 1 ? 'workspace' : 'workspaces'}
+              ${visibleWorkspaceCount} visible
+              ${visibleWorkspaceCount === 1 ? 'workspace' : 'workspaces'}
               ${hiddenRepositoryCount ? ` · ${hiddenRepositoryCount} not currently visible` : ''}
             </p>
           </div>
           <div class="project-row-actions">
-            <button class="btn" type="button" data-rename-project="${esc(project.id)}">Rename</button>
-            <button class="btn" type="button" data-ungroup-project="${esc(project.id)}" ${repositories.length ? '' : 'disabled'}>Ungroup repositories</button>
-            <button class="btn" type="button" data-delete-project="${esc(project.id)}" ${protectedMappings ? 'disabled' : ''}>Delete project</button>
+            <button class="btn" type="button" data-rename-project="${esc(project.id)}">
+              Rename
+            </button>
+            <button
+              class="btn"
+              type="button"
+              data-ungroup-project="${esc(project.id)}"
+              ${repositories.length ? '' : 'disabled'}
+            >
+              Ungroup repositories
+            </button>
+            <button
+              class="btn"
+              type="button"
+              data-delete-project="${esc(project.id)}"
+              ${protectedMappings ? 'disabled' : ''}
+            >
+              Delete project
+            </button>
           </div>
-          ${
-            protectedMappings
-              ? '<p class="small">Delete is unavailable while historical aliases or primary workspaces are protected.</p>'
-              : ''
-          }
+          ${protectedMappings
+            ? '<p class="small">Delete is unavailable while historical aliases or primary workspaces are protected.</p>'
+            : ''}
           <div data-project-inline-editor="${esc(project.id)}"></div>
         </section>
       `;
@@ -2955,7 +2982,9 @@ function projectLifecycleEditor(project, action) {
         <label class="small" for="projectRenameName">Project name</label>
         <input id="projectRenameName" value="${esc(project.name)}" autocomplete="off" />
         <div class="project-row-actions">
-          <button class="btn primary" type="button" data-confirm-project-action="rename">Save name</button>
+          <button class="btn primary" type="button" data-confirm-project-action="rename">
+            Save name
+          </button>
           <button class="btn" type="button" data-cancel-project-action>Cancel</button>
         </div>
       </div>
@@ -2964,25 +2993,22 @@ function projectLifecycleEditor(project, action) {
   const verb = action === 'delete' ? 'Delete project' : 'Make repositories standalone';
   return /* HTML */ `
     <div class="project-editor" data-project-editor="${esc(action)}">
-      <p class="small">${
-        action === 'delete'
+      <p class="small">
+        ${action === 'delete'
           ? 'The repositories remain tracked and return to standalone projects.'
-          : 'All repositories in this project will return to standalone projects.'
-      }</p>
+          : 'All repositories in this project will return to standalone projects.'}
+      </p>
       <div class="project-row-actions">
-        <button class="btn primary" type="button" data-confirm-project-action="${esc(action)}">${verb}</button>
+        <button class="btn primary" type="button" data-confirm-project-action="${esc(action)}">
+          ${verb}
+        </button>
         <button class="btn" type="button" data-cancel-project-action>Cancel</button>
       </div>
     </div>
   `;
 }
 
-function bindProjectManagerRows(
-  choices,
-  selectedRepositoryIds,
-  persistTracking,
-  redraw,
-) {
+function bindProjectManagerRows(choices, selectedRepositoryIds, persistTracking, redraw) {
   document.querySelectorAll('[data-track-workspace]').forEach((control) => {
     control.onchange = () => {
       const row = choices.get(control.dataset.trackWorkspace);
@@ -3028,6 +3054,13 @@ function showProjectManagerError(error) {
 
 function restoreProjectManagerFocus(selector) {
   document.querySelector(selector)?.focus();
+}
+
+function focusFirstProjectEditorControl(selector) {
+  document
+    .querySelector(selector)
+    ?.querySelector('input:not([type="hidden"]), select, button:not(:disabled)')
+    ?.focus();
 }
 
 function saveProjectIdentityDraft(draft, fingerprint) {
@@ -3140,15 +3173,27 @@ async function manage() {
       <div class="project-bulk-toolbar">
         <strong>${selectedRepositoryIds.size} selected</strong>
         <div class="project-row-actions">
-          <button class="btn primary" type="button" id="groupSelected" ${selectedRepositoryIds.size ? '' : 'disabled'}>Group selected</button>
-          <button class="btn" type="button" id="clearProjectSelection" ${selectedRepositoryIds.size ? '' : 'disabled'}>Clear selection</button>
+          <button
+            class="btn primary"
+            type="button"
+            id="groupSelected"
+            ${selectedRepositoryIds.size ? '' : 'disabled'}
+          >
+            Group selected
+          </button>
+          <button
+            class="btn"
+            type="button"
+            id="clearProjectSelection"
+            ${selectedRepositoryIds.size ? '' : 'disabled'}
+          >
+            Clear selection
+          </button>
         </div>
       </div>
-      ${
-        bulkEditorMode === 'bulk'
-          ? projectBulkEditor(identityConfig, selectedRepositoryIds, bulkAssignmentMode)
-          : ''
-      }
+      ${bulkEditorMode === 'bulk'
+        ? projectBulkEditor(identityConfig, selectedRepositoryIds, bulkAssignmentMode)
+        : ''}
       <h4>Configured projects</h4>
       <div class="configured-project-list">
         ${configuredProjectCards(identityConfig, visibleRepositoryIds)}
@@ -3170,14 +3215,10 @@ async function manage() {
   const completeProjectAction = async (action, focusSelector) => {
     try {
       let outcome = null;
-      identityConfig = await submitProjectManagerAction(
-        identityConfig,
-        action,
-        async (draft) => {
-          outcome = await persistProjectIdentityChange(draft, identityConfig.fingerprint);
-          return outcome.config;
-        },
-      );
+      identityConfig = await submitProjectManagerAction(identityConfig, action, async (draft) => {
+        outcome = await persistProjectIdentityChange(draft, identityConfig.fingerprint);
+        return outcome.config;
+      });
       if (outcome.status === 'conflict') {
         draw();
         $('settingsError').textContent =
@@ -3196,7 +3237,7 @@ async function manage() {
       bulkEditorMode = 'bulk';
       lifecycleEditor = null;
       draw();
-      $('projectMode').focus();
+      focusFirstProjectEditorControl('[data-project-editor="bulk"]');
     };
     $('clearProjectSelection').onclick = () => {
       selectedRepositoryIds.clear();
@@ -3208,7 +3249,7 @@ async function manage() {
       $('projectMode').onchange = () => {
         bulkAssignmentMode = $('projectMode').value;
         draw();
-        $('projectMode').focus();
+        focusFirstProjectEditorControl('[data-project-editor="bulk"]');
       };
       $('projectCancel').onclick = () => {
         bulkEditorMode = null;
@@ -3242,7 +3283,7 @@ async function manage() {
         lifecycleEditor = { type: 'rename', projectId: button.dataset.renameProject };
         bulkEditorMode = null;
         draw();
-        $('projectRenameName').focus();
+        focusFirstProjectEditorControl('[data-project-editor="rename"]');
       };
     });
     document.querySelectorAll('[data-ungroup-project]').forEach((button) => {
@@ -3250,7 +3291,7 @@ async function manage() {
         lifecycleEditor = { type: 'ungroup', projectId: button.dataset.ungroupProject };
         bulkEditorMode = null;
         draw();
-        document.querySelector('[data-confirm-project-action]')?.focus();
+        focusFirstProjectEditorControl('[data-project-editor="ungroup"]');
       };
     });
     document.querySelectorAll('[data-delete-project]').forEach((button) => {
@@ -3258,7 +3299,7 @@ async function manage() {
         lifecycleEditor = { type: 'delete', projectId: button.dataset.deleteProject };
         bulkEditorMode = null;
         draw();
-        document.querySelector('[data-confirm-project-action]')?.focus();
+        focusFirstProjectEditorControl('[data-project-editor="delete"]');
       };
     });
     const cancelLifecycle = document.querySelector('[data-cancel-project-action]');
@@ -3285,10 +3326,7 @@ async function manage() {
             focusSelector,
           );
         } else {
-          completeProjectAction(
-            { type: action.type, projectId: action.projectId },
-            focusSelector,
-          );
+          completeProjectAction({ type: action.type, projectId: action.projectId }, focusSelector);
         }
       };
     }
@@ -3312,10 +3350,7 @@ async function manage() {
     $('discover').disabled = true;
     try {
       const result = await api('discover', { root: $('rootPath').value });
-      discoveredWorkspaces = [
-        ...discoveredWorkspaces,
-        ...(result.repositories || []),
-      ];
+      discoveredWorkspaces = [...discoveredWorkspaces, ...(result.repositories || [])];
       choices = projectManagerModel(paths, workspaces, discoveredWorkspaces);
       draw();
       $('settingsError').textContent =

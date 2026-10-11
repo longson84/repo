@@ -151,9 +151,13 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
 
         by_workspace = {row["workspace_id"]: row for row in rows}
         self.assertTrue(by_workspace["/work/a"]["tracked"])
-        self.assertEqual(by_workspace["/work/a"]["repository_id"], "remote:example/alpha")
+        self.assertEqual(
+            by_workspace["/work/a"]["repository_id"], "remote:example/alpha"
+        )
         self.assertFalse(by_workspace["/work/b"]["tracked"])
-        self.assertEqual(by_workspace["/work/b"]["repository_id"], "remote:example/beta")
+        self.assertEqual(
+            by_workspace["/work/b"]["repository_id"], "remote:example/beta"
+        )
         self.assertTrue(by_workspace["/legacy/path"]["tracked"])
         self.assertIsNone(by_workspace["/legacy/path"]["repository_id"])
 
@@ -221,7 +225,7 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
 
         self.assertIn('class="configured-project-card"', html)
         self.assertIn("2 repositories", html)
-        self.assertIn("2 visible workspaces", html)
+        self.assertRegex(html, r"2\s+visible\s+workspaces")
         self.assertIn("1 not currently visible", html)
         self.assertRegex(
             html,
@@ -261,12 +265,16 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
 
         self.assertEqual(result["draft"], result["persisted"])
         general = next(
-            project for project in result["draft"]["projects"] if project["id"] == "general"
+            project
+            for project in result["draft"]["projects"]
+            if project["id"] == "general"
         )
         self.assertEqual(general["repositories"], ["repo:a", "repo:b"])
         self.assertEqual(result["draft"]["version"], 1)
 
-    def test_project_action_error_preserves_working_config_and_focus_helper_restores_trigger(self):
+    def test_project_action_error_preserves_working_config_and_focus_helper_restores_trigger(
+        self,
+    ):
         result = self.render(
             "(() => { const config={version:1,projects:[{id:'old',name:'Old',repositories:[],"
             "primary_workspaces:{},workspace_aliases:[]}]}; const before=JSON.stringify(config);"
@@ -375,6 +383,33 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
         )
 
         self.assertEqual(result, {"message": "Another scan is already running."})
+
+    def test_project_manager_row_wraps_distinct_accessible_controls(self):
+        html = self.render(
+            "projectManagerRows(new Map([['/work/a',{workspace_id:'/work/a',"
+            "workspace_name:'Alpha',path:'/work/a',repository_id:'repo:a',"
+            "repository_name:'alpha',project_id:'alpha',project_name:'Alpha',tracked:true}]]),"
+            "new Set(['repo:a']),{version:1,projects:[]})"
+        )
+
+        self.assertRegex(
+            html,
+            r'class="project-row-actions"[\s\S]*aria-label="Select alpha for grouping"[\s\S]*aria-label="Track Alpha"',
+        )
+        self.assertIn('class="project-manager-row"', html)
+
+    def test_project_editor_focuses_first_control_and_cancel_restores_trigger(self):
+        result = self.render(
+            "(() => { let firstFocused=false,triggerFocused=false;"
+            "document.querySelector=(selector)=>selector==='[data-project-editor=bulk]'?"
+            "{querySelector(){return {focus(){firstFocused=true}}}}:"
+            "{focus(){triggerFocused=true}};"
+            "focusFirstProjectEditorControl('[data-project-editor=bulk]');"
+            "restoreProjectManagerFocus('#groupSelected');"
+            "return {firstFocused,triggerFocused}; })()"
+        )
+
+        self.assertEqual(result, {"firstFocused": True, "triggerFocused": True})
 
 
 if __name__ == "__main__":
