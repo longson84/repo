@@ -1,7 +1,7 @@
 # Shared Project Identity — Design Spec
 
 **Date:** 2026-10-11
-**Status:** Proposed
+**Status:** Approved
 **Product:** Theana / Repo local dashboard
 
 ## Intent
