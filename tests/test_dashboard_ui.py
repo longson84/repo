@@ -1,5 +1,6 @@
 import json
 import pathlib
+import re
 import subprocess
 import unittest
 
@@ -133,6 +134,59 @@ process.stdout.write(JSON.stringify(output));
         self.assertLess(result["rows"].index("Alpha"), result["rows"].index("Zulu"))
         self.assertIn('data-ai-usage-sort="label"', result["header"])
         self.assertIn('aria-sort="ascending"', result["header"])
+
+    def test_project_manager_model_keeps_tracking_separate(self):
+        rows = self.render(
+            "[...projectManagerModel(['/work/a','/legacy/path'],["
+            "{workspace_id:'/work/a',path:'/work/a',workspace_name:'Alpha',"
+            "repository_id:'remote:example/alpha',repository_name:'alpha',"
+            "project_id:'product',project_name:'Product'}],["
+            "{workspace_id:'/work/b',path:'/work/b',workspace_name:'Beta',"
+            "repository_id:'remote:example/beta',repository_name:'beta',"
+            "project_id:'remote:example/beta',project_name:'beta'}]).values()]"
+        )
+
+        by_workspace = {row["workspace_id"]: row for row in rows}
+        self.assertTrue(by_workspace["/work/a"]["tracked"])
+        self.assertEqual(by_workspace["/work/a"]["repository_id"], "remote:example/alpha")
+        self.assertFalse(by_workspace["/work/b"]["tracked"])
+        self.assertEqual(by_workspace["/work/b"]["repository_id"], "remote:example/beta")
+        self.assertTrue(by_workspace["/legacy/path"]["tracked"])
+        self.assertIsNone(by_workspace["/legacy/path"]["repository_id"])
+
+    def test_project_manager_rows_select_repository_identity_once(self):
+        html = self.render(
+            "projectManagerRows(new Map(["
+            "['/work/a',{workspace_id:'/work/a',workspace_name:'Alpha',path:'/work/a',"
+            "repository_id:'remote:example/shared',repository_name:'shared',project_id:'group',"
+            "project_name:'Group',tracked:true}],"
+            "['/work/a-copy',{workspace_id:'/work/a-copy',workspace_name:'Alpha copy',path:'/work/a-copy',"
+            "repository_id:'remote:example/shared',repository_name:'shared',project_id:'group',"
+            "project_name:'Group',tracked:false}],"
+            "['/work/unknown',{workspace_id:'/work/unknown',workspace_name:'Unknown',path:'/work/unknown',"
+            "repository_id:null,repository_name:null,project_id:null,project_name:null,tracked:true}]"
+            "]),new Set(['remote:example/shared']),{version:1,projects:[]})"
+        )
+
+        self.assertEqual(html.count('data-group-repository="remote:example/shared"'), 2)
+        self.assertEqual(
+            len(
+                re.findall(
+                    r'<input[^>]*data-group-repository="remote:example/shared"[^>]*checked',
+                    html,
+                )
+            ),
+            2,
+        )
+        self.assertIn('aria-label="Select shared for grouping"', html)
+        self.assertIn('aria-label="Track Alpha"', html)
+        self.assertIn('data-track-workspace="/work/a-copy"', html)
+        self.assertIn('data-current-project="group"', html)
+        self.assertRegex(
+            html,
+            r'<input[^>]*data-group-repository=""[^>]*aria-label="Select Unknown for grouping"[^>]*disabled',
+        )
+        self.assertIn('data-track-workspace="/work/unknown"', html)
 
 
 if __name__ == "__main__":

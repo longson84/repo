@@ -12,6 +12,7 @@ let repos = [],
   paired = false,
   roots = [],
   paths = [],
+  workspaces = [],
   token = '',
   lastFocus,
   activity = [],
@@ -56,6 +57,7 @@ function clearPairing() {
   machineName = 'This machine';
   roots = [];
   paths = [];
+  workspaces = [];
   repos = [];
   scannedAt = null;
   statsByPath = {};
@@ -66,6 +68,7 @@ function applyStatus(result) {
   machineName = result.machine || machineName;
   roots = result.roots || [];
   paths = result.paths || [];
+  if (Array.isArray(result.workspaces)) workspaces = result.workspaces;
   if (Array.isArray(result.repositories)) repos = result.repositories;
   if ('scannedAt' in result) scannedAt = result.scannedAt || null;
 }
@@ -2767,27 +2770,123 @@ async function bootstrapPairing() {
     paired = false;
   }
 }
-function manage() {
-  if (!paired) return connect();
-  const choices = new Map(
-    paths.map((p) => [p, { path: p, name: p.split(/[\\/]/).pop(), checked: true }]),
+function projectManagerModel(trackedPaths, canonicalWorkspaces, discovered) {
+  const tracked = new Set(trackedPaths || []);
+  const model = new Map();
+  const mergeWorkspace = (item) => {
+    const workspaceId = item?.workspace_id || item?.path;
+    if (!workspaceId) return;
+    const existing = model.get(workspaceId) || {};
+    const path = item.path || existing.path || workspaceId;
+    model.set(workspaceId, {
+      ...existing,
+      ...item,
+      workspace_id: workspaceId,
+      workspace_name:
+        item.workspace_name || item.name || existing.workspace_name || path.split(/[\\/]/).pop(),
+      path,
+      repository_id: item.repository_id || existing.repository_id || null,
+      repository_name: item.repository_name || existing.repository_name || null,
+      project_id: item.project_id || existing.project_id || null,
+      project_name: item.project_name || existing.project_name || null,
+      tracked: tracked.has(path) || tracked.has(workspaceId),
+    });
+  };
+  (canonicalWorkspaces || []).forEach(mergeWorkspace);
+  (discovered || []).forEach(mergeWorkspace);
+  tracked.forEach((path) => {
+    if (!model.has(path)) {
+      model.set(path, {
+        workspace_id: path,
+        workspace_name: path.split(/[\\/]/).pop(),
+        path,
+        repository_id: null,
+        repository_name: null,
+        project_id: null,
+        project_name: null,
+        tracked: true,
+      });
+    }
+  });
+  return model;
+}
+
+function configuredProjectForRepository(identityConfig, repositoryId) {
+  if (!repositoryId) return null;
+  return (identityConfig?.projects || []).find((project) =>
+    (project.repositories || []).includes(repositoryId),
   );
+}
+
+function projectManagerRows(choices, selectedRepositoryIds, identityConfig) {
+  const rows = [...choices.values()].sort((a, b) =>
+    String(a.workspace_name || a.path).localeCompare(String(b.workspace_name || b.path)),
+  );
+  if (!rows.length) return '<p class="small">Discover a folder or add a path.</p>';
+  return rows
+    .map((row) => {
+      const configured = configuredProjectForRepository(identityConfig, row.repository_id);
+      const projectId = configured?.id || row.project_id || '';
+      const projectName = configured?.name || row.project_name || 'Unresolved';
+      const repositoryName = row.repository_name || row.workspace_name || row.path;
+      const groupingDisabled = !identityConfig || !row.repository_id;
+      const groupingLabel = `Select ${repositoryName} for grouping`;
+      const trackingLabel = `Track ${row.workspace_name || row.path}`;
+      return /* HTML */ `
+        <div class="project-manager-row" data-current-project="${esc(projectId)}">
+          <label class="project-group-select">
+            <input
+              type="checkbox"
+              data-group-repository="${esc(row.repository_id || '')}"
+              ${row.repository_id && selectedRepositoryIds.has(row.repository_id) ? 'checked' : ''}
+              aria-label="${esc(groupingLabel)}"
+              ${groupingDisabled ? 'disabled' : ''}
+            />
+          </label>
+          <div class="project-row-meta">
+            <strong>${esc(row.workspace_name || row.path)}</strong>
+            <span class="small">${esc(row.path)}</span>
+            <span class="small">Repository: ${esc(row.repository_name || 'Identity unavailable')}</span>
+            <span class="small">Project: ${esc(projectName)}</span>
+          </div>
+          <label class="project-track-toggle">
+            <input
+              type="checkbox"
+              data-track-workspace="${esc(row.workspace_id)}"
+              aria-label="${esc(trackingLabel)}"
+              ${row.tracked ? 'checked' : ''}
+            />
+            <span>Tracked</span>
+          </label>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+async function manage() {
+  if (!paired) return connect();
+  let discoveredWorkspaces = [];
+  let choices = projectManagerModel(paths, workspaces, discoveredWorkspaces);
+  let identityConfig = null;
+  const selectedRepositoryIds = new Set();
   let persistTimer = 0;
   open(
     /* HTML */ `
       <h3 id="dialogTitle">Manage tracked repos</h3>
       <p>
-        Discover within an approved folder, then tick what to track on ${esc(machineName)}. Changes
-        apply immediately.
+        Discover within an approved folder. Repository selection is for project grouping; Tracked
+        controls what appears in reports on ${esc(machineName)}.
       </p>
       <label class="small" for="rootPath">Discovery folder</label>
       <input class="setup-input" id="rootPath" value="${esc(roots[0] || '')}" />
       <div class="choice-toolbar">
         <button class="btn" id="discover">Discover repositories</button>
-        <button class="btn" type="button" id="selectAll">Select all</button>
-        <button class="btn" type="button" id="deselectAll">Deselect all</button>
+        <button class="btn" type="button" id="selectAll">Track all</button>
+        <button class="btn" type="button" id="deselectAll">Untrack all</button>
       </div>
       <div id="choices" class="choice-list"></div>
+      <div id="projectManagerActions" class="project-manager-actions"></div>
       <label class="small" for="repoPath">Or add a repository by full path</label>
       <input class="setup-input" id="repoPath" placeholder="/path/to/a/repository" />
       <button class="btn" id="addPath">Add path</button>
@@ -2802,13 +2901,15 @@ function manage() {
   const applySelection = async () => {
     try {
       const result = await api('selection', {
-        paths: [...choices.values()].filter((r) => r.checked).map((r) => r.path),
+        paths: [...choices.values()].filter((row) => row.tracked).map((row) => row.path),
       });
       applyStatus(result);
+      choices = projectManagerModel(paths, workspaces, discoveredWorkspaces);
       statsByPath = Object.fromEntries(
         Object.entries(statsByPath).filter(([path]) => paths.includes(path)),
       );
       render();
+      draw();
       $('settingsError').textContent = `Tracking ${paths.length} repositor${
         paths.length === 1 ? 'y' : 'ies'
       }.`;
@@ -2821,38 +2922,39 @@ function manage() {
     persistTimer = setTimeout(applySelection, 120);
   };
   const draw = () => {
-    $('choices').innerHTML =
-      [...choices.values()]
-        .map(
-          (r, i) => /* HTML */ `
-            <label class="repo-choice">
-              <input type="checkbox" data-choice="${i}" ${r.checked ? 'checked' : ''} />
-              <span>
-                <strong>${esc(r.name)}</strong>
-                <span class="small" style="display:block;margin-top:5px">${esc(r.path)}</span>
-              </span>
-            </label>
-          `,
-        )
-        .join('') || '<p class="small">Discover a folder or add a path.</p>';
-    document.querySelectorAll('[data-choice]').forEach((c) => {
-      c.onchange = () => {
-        [...choices.values()][Number(c.dataset.choice)].checked = c.checked;
+    $('choices').innerHTML = projectManagerRows(choices, selectedRepositoryIds, identityConfig);
+    document.querySelectorAll('[data-track-workspace]').forEach((control) => {
+      control.onchange = () => {
+        const row = choices.get(control.dataset.trackWorkspace);
+        if (!row) return;
+        row.tracked = control.checked;
         persist();
       };
     });
+    document.querySelectorAll('[data-group-repository]').forEach((control) => {
+      control.onchange = () => {
+        const repositoryId = control.dataset.groupRepository;
+        if (!repositoryId) return;
+        if (control.checked) selectedRepositoryIds.add(repositoryId);
+        else selectedRepositoryIds.delete(repositoryId);
+        draw();
+      };
+    });
+    $('projectManagerActions').innerHTML = identityConfig
+      ? `<p class="small">${selectedRepositoryIds.size} repositor${selectedRepositoryIds.size === 1 ? 'y' : 'ies'} selected for grouping.</p>`
+      : '<p class="small">Loading project grouping…</p>';
   };
   draw();
   $('selectAll').onclick = () => {
-    choices.forEach((r) => {
-      r.checked = true;
+    choices.forEach((row) => {
+      row.tracked = true;
     });
     draw();
     persist();
   };
   $('deselectAll').onclick = () => {
-    choices.forEach((r) => {
-      r.checked = false;
+    choices.forEach((row) => {
+      row.tracked = false;
     });
     draw();
     persist();
@@ -2861,12 +2963,14 @@ function manage() {
     $('discover').disabled = true;
     try {
       const result = await api('discover', { root: $('rootPath').value });
-      result.repositories.forEach((r) => {
-        if (!choices.has(r.path)) choices.set(r.path, { ...r, checked: false });
-      });
+      discoveredWorkspaces = [
+        ...discoveredWorkspaces,
+        ...(result.repositories || []),
+      ];
+      choices = projectManagerModel(paths, workspaces, discoveredWorkspaces);
       draw();
       $('settingsError').textContent =
-        `Found ${result.repositories.length} repositories. Tick the ones you want.`;
+        `Found ${result.repositories.length} repositories. Choose grouping or tracking separately.`;
     } catch (e) {
       $('settingsError').textContent = e.message;
     } finally {
@@ -2877,15 +2981,27 @@ function manage() {
     const path = $('repoPath').value.trim();
     if (path) {
       choices.set(path, {
+        workspace_id: path,
+        workspace_name: path.split(/[\\/]/).pop(),
         path,
-        name: path.split(/[\\/]/).pop(),
-        checked: true,
+        repository_id: null,
+        repository_name: null,
+        project_id: null,
+        project_name: null,
+        tracked: true,
       });
       draw();
       $('repoPath').value = '';
       persist();
     }
   };
+  try {
+    identityConfig = await api('project-identities');
+    draw();
+    $('settingsError').textContent = 'Project grouping is ready.';
+  } catch (error) {
+    $('settingsError').textContent = `Could not load project grouping: ${error.message}`;
+  }
 }
 async function runScan() {
   if (!paired || busy || statsBusy || !paths.length) return;
