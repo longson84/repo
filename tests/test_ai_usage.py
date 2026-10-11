@@ -4,6 +4,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "companion"))
@@ -426,6 +427,82 @@ class ClaudeCodexUsageTests(unittest.TestCase):
 
 
 class AggregateUsageTests(unittest.TestCase):
+    def test_aggregate_reports_partial_pricing_coverage(self):
+        source = {"id": "codex.home", "path": "/synthetic", "surface": "unknown"}
+        events = [
+            {
+                "event_key": "priced",
+                "conversation_key": "codex:one",
+                "source_id": "codex.home",
+                "tool": "codex",
+                "surface": "terminal",
+                "provider": "openai",
+                "model": "gpt-known",
+                "date": "2026-01-01",
+                "input_tokens": 100,
+                "cached_tokens": 0,
+                "output_tokens": 50,
+                "cache_write_tokens": 0,
+            },
+            {
+                "event_key": "unpriced",
+                "conversation_key": "codex:two",
+                "source_id": "codex.home",
+                "tool": "codex",
+                "surface": "terminal",
+                "provider": "openai",
+                "model": "gpt-unknown",
+                "date": "2026-01-01",
+                "input_tokens": 50,
+                "cached_tokens": 0,
+                "output_tokens": 50,
+                "cache_write_tokens": 0,
+            },
+        ]
+        table = {"per_million": {"gpt-known": {"input": 1.0, "output": 2.0}}}
+        with mock.patch.object(usage_mod, "resolve_sources", return_value=[source]), mock.patch.object(
+            usage_mod, "_collect_source_usage", return_value={"events": events, "warnings": [], "reconciliation": []}
+        ), mock.patch.object(usage_mod.prices_mod, "DEFAULT_PRICES", table):
+            result = usage_mod.aggregate_usage(sources=["codex.home"])
+
+        coverage = result["pricing_coverage"]
+        self.assertEqual(coverage["priced_events"], 1)
+        self.assertEqual(coverage["unpriced_events"], 1)
+        self.assertEqual(coverage["event_percentage"], 50.0)
+        self.assertEqual(coverage["priced_tokens"]["total"], 150)
+        self.assertEqual(coverage["unpriced_tokens"]["total"], 100)
+        self.assertEqual(coverage["token_percentage"], 60.0)
+        self.assertEqual(result["totals"]["input_tokens"], 150)
+
+    def test_same_model_label_from_different_providers_has_separate_rows(self):
+        source = {"id": "codex.home", "path": "/synthetic", "surface": "unknown"}
+        base = {
+            "conversation_key": "codex:one",
+            "source_id": "codex.home",
+            "tool": "codex",
+            "surface": "terminal",
+            "model": "shared-name",
+            "date": "2026-01-01",
+            "input_tokens": 1,
+            "cached_tokens": 0,
+            "output_tokens": 0,
+            "cache_write_tokens": 0,
+        }
+        events = [
+            {**base, "event_key": "one", "provider": "openai"},
+            {**base, "event_key": "two", "provider": "anthropic"},
+        ]
+        with mock.patch.object(usage_mod, "resolve_sources", return_value=[source]), mock.patch.object(
+            usage_mod, "_collect_source_usage", return_value={"events": events, "warnings": [], "reconciliation": []}
+        ):
+            result = usage_mod.aggregate_usage(sources=["codex.home"])
+
+        self.assertEqual(len(result["by_model"]), 2)
+        self.assertEqual(
+            {(row["provider"], row["model"]) for row in result["by_model"]},
+            {("openai", "shared-name"), ("anthropic", "shared-name")},
+        )
+
     def test_antigravity_duplicate_step_identity_is_counted_once_across_sources(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = pathlib.Path(tmp)

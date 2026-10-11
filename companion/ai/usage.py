@@ -45,6 +45,28 @@ def _empty_bucket() -> dict[str, Any]:
     }
 
 
+def _empty_token_coverage() -> dict[str, int]:
+    return {
+        "input_tokens": 0,
+        "cached_tokens": 0,
+        "output_tokens": 0,
+        "cache_write_tokens": 0,
+        "total": 0,
+    }
+
+
+def _add_token_coverage(bucket: dict[str, int], event: Mapping[str, Any]) -> None:
+    for field in (
+        "input_tokens",
+        "cached_tokens",
+        "output_tokens",
+        "cache_write_tokens",
+    ):
+        value = int(event.get(field) or 0)
+        bucket[field] += value
+        bucket["total"] += value
+
+
 def _add(bucket: dict[str, Any], event: Mapping[str, Any], cost: float) -> None:
     bucket["input_tokens"] += int(event.get("input_tokens") or 0)
     bucket["cached_tokens"] += int(event.get("cached_tokens") or 0)
@@ -141,6 +163,14 @@ def _serialize_periods(store: dict[str, dict[str, Any]]) -> list[dict[str, Any]]
     return rows
 
 
+def _finalize_model_pricing(store: Mapping[str, dict[str, Any]]) -> None:
+    for bucket in store.values():
+        statuses = bucket.pop("_pricing_statuses", set())
+        bucket["pricing_status"] = (
+            next(iter(statuses)) if len(statuses) == 1 else "partial"
+        )
+
+
 def aggregate_usage(
     *,
     sources: Optional[Sequence[str]] = None,
@@ -209,6 +239,9 @@ def aggregate_usage(
     warnings: list[dict[str, Any]] = []
     reconciliation: list[dict[str, Any]] = []
     unique_events: dict[str, dict[str, Any]] = {}
+    priced_tokens = _empty_token_coverage()
+    unpriced_tokens = _empty_token_coverage()
+    pricing_status_counts: dict[str, int] = {}
 
     period_stores = {
         "day": by_day,
@@ -253,14 +286,32 @@ def aggregate_usage(
             unique_events[event_key] = event
 
     for event in unique_events.values():
-        cost = prices_mod.estimate_cost(event, table)
+        pricing = prices_mod.price_usage(event, table)
+        cost = float(pricing["cost_usd"])
+        pricing_status = str(pricing["status"])
+        pricing_status_counts[pricing_status] = (
+            pricing_status_counts.get(pricing_status, 0) + 1
+        )
+        if pricing_status == "priced":
+            _add_token_coverage(priced_tokens, event)
+        else:
+            _add_token_coverage(unpriced_tokens, event)
         _add(totals, event, cost)
 
         model_key = str(event.get("model") or "unknown")
+        provider_key = str(event.get("provider") or "unknown")
+        model_group_key = f"{provider_key}\0{model_key}"
         model_bucket = by_model.setdefault(
-            model_key, {**_empty_bucket(), "model": model_key}
+            model_group_key,
+            {
+                **_empty_bucket(),
+                "provider": provider_key,
+                "model": model_key,
+                "_pricing_statuses": set(),
+            },
         )
         _add(model_bucket, event, cost)
+        model_bucket["_pricing_statuses"].add(pricing_status)
 
         project_key = str(event.get("project") or "unknown")
         project_bucket = by_project.setdefault(
@@ -299,8 +350,17 @@ def aggregate_usage(
             bucket = _period_bucket(period_stores[grain], period)
             _add(bucket, event, cost)
             models = bucket["_models"]
-            mb = models.setdefault(model_key, {**_empty_bucket(), "model": model_key})
+            mb = models.setdefault(
+                model_group_key,
+                {
+                    **_empty_bucket(),
+                    "provider": provider_key,
+                    "model": model_key,
+                    "_pricing_statuses": set(),
+                },
+            )
             _add(mb, event, cost)
+            mb["_pricing_statuses"].add(pricing_status)
             projects = bucket["_projects"]
             pb = projects.setdefault(
                 project_key, {**_empty_bucket(), "project": project_key}
@@ -308,6 +368,10 @@ def aggregate_usage(
             _add(pb, event, cost)
 
     totals["cost_usd"] = round(float(totals["cost_usd"]), 6)
+    _finalize_model_pricing(by_model)
+    for period_store in period_stores.values():
+        for period_bucket in period_store.values():
+            _finalize_model_pricing(period_bucket["_models"])
     by_day_rows = _serialize_periods(by_day)
     by_week_rows = _serialize_periods(by_week)
     by_month_rows = _serialize_periods(by_month)
@@ -315,6 +379,31 @@ def aggregate_usage(
     reconciliation_counts = {
         status: sum(1 for row in reconciliation if row.get("status") == status)
         for status in ("matched", "different", "unavailable")
+    }
+    priced_events = pricing_status_counts.get("priced", 0)
+    total_events = len(unique_events)
+    unpriced_events = total_events - priced_events
+    total_token_count = priced_tokens["total"] + unpriced_tokens["total"]
+    pricing_coverage = {
+        "priced_events": priced_events,
+        "unpriced_events": unpriced_events,
+        "total_events": total_events,
+        "event_percentage": round(
+            100.0 if total_events == 0 else priced_events * 100.0 / total_events, 2
+        ),
+        "priced_tokens": priced_tokens,
+        "unpriced_tokens": unpriced_tokens,
+        "total_tokens": {
+            field: priced_tokens[field] + unpriced_tokens[field]
+            for field in priced_tokens
+        },
+        "token_percentage": round(
+            100.0
+            if total_token_count == 0
+            else priced_tokens["total"] * 100.0 / total_token_count,
+            2,
+        ),
+        "statuses": pricing_status_counts,
     }
 
     return {
@@ -330,6 +419,7 @@ def aggregate_usage(
             "reconciliation": reconciliation_counts,
         },
         "reconciliation": reconciliation,
+        "pricing_coverage": pricing_coverage,
         "prices": {
             "currency": table.get("currency") or "USD",
             "notes": table.get("notes") or "",
