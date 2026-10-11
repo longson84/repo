@@ -39,6 +39,12 @@ def summary(
     updated_at: Optional[str] = None,
     size_bytes: int = 0,
     path: Optional[str] = None,
+    conversation_key: Optional[str] = None,
+    source_ids: Optional[list[str]] = None,
+    paths: Optional[list[str]] = None,
+    execution_count: Optional[int] = None,
+    executions: Optional[list[dict[str, Any]]] = None,
+    identity_confidence: Optional[str] = None,
     extra: Optional[dict[str, Any]] = None,
 ) -> dict:
     payload = {
@@ -55,6 +61,18 @@ def summary(
         "size_bytes": size_bytes,
         "path": path,
     }
+    if conversation_key is not None:
+        payload["conversation_key"] = conversation_key
+    if source_ids is not None:
+        payload["source_ids"] = source_ids
+    if paths is not None:
+        payload["paths"] = paths
+    if execution_count is not None:
+        payload["execution_count"] = execution_count
+    if executions is not None:
+        payload["executions"] = executions
+    if identity_confidence is not None:
+        payload["identity_confidence"] = identity_confidence
     if extra:
         payload["extra"] = extra
     return payload

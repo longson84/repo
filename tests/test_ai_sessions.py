@@ -114,6 +114,48 @@ class SessionAdapterTests(unittest.TestCase):
         self.assertEqual(rows[0]["project"], "foo")
         self.assertIn("review", rows[0]["preview"])
 
+    def test_claude_subagents_are_executions_not_conversations(self):
+        project = self.home / ".claude" / "projects" / "demo"
+        session_id = "session-parent"
+        root = project / f"{session_id}.jsonl"
+        root.parent.mkdir(parents=True)
+        root.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "cwd": "/Users/demo/Projects/foo",
+                    "sessionId": session_id,
+                    "timestamp": "2026-09-01T10:00:00.000Z",
+                    "message": {"content": "coordinate the agents"},
+                }
+            )
+            + "\n"
+        )
+        subagents = project / session_id / "subagents"
+        subagents.mkdir(parents=True)
+        for child in ("agent-one", "agent-two"):
+            (subagents / f"{child}.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "sessionId": session_id,
+                        "timestamp": "2026-09-01T10:01:00.000Z",
+                        "message": {"id": f"msg-{child}", "content": "done"},
+                    }
+                )
+                + "\n"
+            )
+
+        rows = claude_code.list_sessions(self.home / ".claude")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], session_id)
+        self.assertEqual(rows[0]["conversation_key"], f"claude-code:conversation:{session_id}")
+        self.assertEqual(rows[0]["execution_count"], 3)
+        self.assertEqual(
+            {item["kind"] for item in rows[0]["executions"]}, {"root", "child"}
+        )
+
     def test_codex_lists_rollout(self):
         root = self.home / ".codex"
         path = (

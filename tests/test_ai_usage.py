@@ -132,6 +132,90 @@ class ClaudeCodexUsageTests(unittest.TestCase):
             self.assertEqual(events[0]["model"], "claude-sonnet-4-6")
             self.assertEqual(events[0]["date"], "2026-03-01")
 
+    def test_claude_repeated_message_rows_emit_terminal_usage_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            path = root / "projects" / "demo" / "session-1.jsonl"
+            path.parent.mkdir(parents=True)
+            rows = []
+            for output in (2, 2, 17):
+                rows.append(
+                    {
+                        "type": "assistant",
+                        "sessionId": "session-1",
+                        "timestamp": "2026-03-01T12:00:00.000Z",
+                        "message": {
+                            "id": "msg-1",
+                            "model": "claude-sonnet-4-6",
+                            "usage": {
+                                "input_tokens": 3,
+                                "cache_creation_input_tokens": 11,
+                                "cache_read_input_tokens": 101,
+                                "output_tokens": output,
+                            },
+                        },
+                    }
+                )
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+            result = claude_code.collect_usage(root)
+
+            self.assertEqual(len(result["events"]), 1)
+            event = result["events"][0]
+            self.assertEqual(event["event_key"], "claude-code:message:msg-1")
+            self.assertEqual(event["input_tokens"], 3)
+            self.assertEqual(event["cache_write_tokens"], 11)
+            self.assertEqual(event["cached_tokens"], 101)
+            self.assertEqual(event["output_tokens"], 17)
+
+    def test_claude_copied_message_id_is_counted_once_across_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            project = root / "projects" / "demo"
+            parent = project / "session-1.jsonl"
+            child = project / "session-1" / "subagents" / "agent-1.jsonl"
+            child.parent.mkdir(parents=True)
+            row = {
+                "type": "assistant",
+                "sessionId": "session-1",
+                "timestamp": "2026-03-01T12:00:00.000Z",
+                "message": {
+                    "id": "msg-shared",
+                    "model": "claude-sonnet-4-6",
+                    "usage": {"input_tokens": 2, "output_tokens": 5},
+                },
+            }
+            parent.write_text(json.dumps(row) + "\n")
+            child.write_text(json.dumps(row) + "\n")
+
+            result = claude_code.collect_usage(root)
+
+            self.assertEqual(len(result["events"]), 1)
+            self.assertEqual(result["events"][0]["output_tokens"], 5)
+
+    def test_claude_malformed_row_preserves_valid_usage_and_reports_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            path = root / "projects" / "demo" / "session-1.jsonl"
+            path.parent.mkdir(parents=True)
+            valid = {
+                "type": "assistant",
+                "sessionId": "session-1",
+                "timestamp": "2026-03-01T12:00:00.000Z",
+                "message": {
+                    "id": "msg-valid",
+                    "model": "claude-sonnet-4-6",
+                    "usage": {"input_tokens": 2, "output_tokens": 5},
+                },
+            }
+            path.write_text(json.dumps(valid) + "\n{not-json}\n")
+
+            result = claude_code.collect_usage(root)
+
+            self.assertEqual(len(result["events"]), 1)
+            self.assertEqual(len(result["warnings"]), 1)
+            self.assertEqual(result["warnings"][0]["code"], "malformed_json")
+
     def test_codex_last_token_usage_not_cumulative_total(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
