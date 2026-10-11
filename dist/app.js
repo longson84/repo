@@ -18,6 +18,7 @@ let repos = [],
   busy = false,
   statsBusy = false,
   statsByPath = {},
+  statsProjects = [],
   detailPath = null,
   detailPeriod = 'day',
   detailCursor = null,
@@ -30,6 +31,8 @@ let repos = [],
   locMetric = 'code',
   sortKey = 'name',
   sortDir = 1;
+const statsExpandedProjects = new Set();
+const statsExpandedRepositories = new Set();
 const base = 'http://127.0.0.1:48731';
 const TOKEN_KEY = 'repo.companion.token';
 function readStoredToken() {
@@ -56,6 +59,7 @@ function clearPairing() {
   repos = [];
   scannedAt = null;
   statsByPath = {};
+  statsProjects = [];
   writeStoredToken('');
 }
 function applyStatus(result) {
@@ -101,10 +105,11 @@ async function api(path, body) {
     clearTimeout(timer);
   }
 }
-function mergeStats(list) {
+function mergeStats(list, projects) {
   (list || []).forEach((s) => {
     if (s?.path) statsByPath[s.path] = s;
   });
+  if (Array.isArray(projects)) statsProjects = projects;
 }
 function emptyLines() {
   return { additions: 0, deletions: 0, net: 0 };
@@ -361,6 +366,20 @@ function sparkline(weeks) {
   `;
 }
 function portfolioNumbers() {
+  if (statsProjects.length) {
+    const repositories = statsProjects.flatMap((project) => project.repositories || []);
+    const names = new Set();
+    statsProjects.forEach((project) =>
+      (project.topContributors || []).forEach((contributor) => names.add(contributor.name)),
+    );
+    return {
+      cached: repositories.length,
+      tracked: paths.length,
+      commits: statsProjects.reduce((sum, project) => sum + (project.commitCount || 0), 0),
+      commits30: statsProjects.reduce((sum, project) => sum + (project.commits30d || 0), 0),
+      contributors: names.size,
+    };
+  }
   const cached = paths.map((p) => statsByPath[p]).filter(Boolean);
   const names = new Set();
   cached.forEach((s) => (s.topContributors || []).forEach((c) => names.add(c.name)));
@@ -376,7 +395,7 @@ async function hydrateStats() {
   if (!paired) return;
   try {
     const result = await api('stats');
-    mergeStats(result.repositories);
+    mergeStats(result.repositories, result.projects);
     render();
   } catch (_) {
     /* cache hydrate is best-effort */
@@ -649,7 +668,9 @@ let aiUsageGroup = 'project'; // model | project | period | surface | tool
 let aiUsagePeriod = 'month'; // day | week | month | year
 let aiUsagePeriodKey = null; // selected period key within aiUsagePeriod
 let aiUsageProjectFilter = '';
+let aiUsageModelFilter = '';
 const aiUsageExpandedProjects = new Set();
+const aiUsageExpandedModels = new Set();
 let aiSearchFilter = {
   q: '',
   source: '',
@@ -1017,15 +1038,25 @@ function aiProjectExpansionKey(project) {
 }
 
 function aiProjectLabel(project) {
-  return project === 'unknown' || !project ? 'Unattributed' : project;
+  const value = project?.project_name || project?.project || project;
+  return value === 'unknown' || !value ? 'Unattributed' : value;
+}
+
+function aiModelId(model) {
+  return `${model?.provider || 'unknown'}::${model?.model || 'unknown'}`;
+}
+
+function aiModelExpansionKey(model) {
+  return `${aiUsagePeriod}:${aiUsagePeriodKey}:${aiModelId(model)}`;
 }
 
 function projectUsageRows(list, periodTotals) {
   const periodVolume = usageTokenVolume(periodTotals);
   return list
     .map((project) => {
-      const projectName = aiProjectLabel(project.project);
-      const expansionKey = aiProjectExpansionKey(project.project || 'unknown');
+      const projectName = aiProjectLabel(project);
+      const projectId = project.project_id || 'unattributed';
+      const expansionKey = aiProjectExpansionKey(projectId);
       const expanded = aiUsageExpandedProjects.has(expansionKey);
       const modelRows = expanded
         ? (project.by_model || [])
@@ -1038,11 +1069,58 @@ function projectUsageRows(list, periodTotals) {
             .join('')
         : '';
       return `<tr class="ai-project-row">
-        <td><button type="button" class="ai-project-toggle" data-ai-project-toggle="${esc(project.project || 'unknown')}" aria-expanded="${expanded}" aria-label="${expanded ? 'Collapse' : 'Expand'} ${esc(projectName)}">${expanded ? '▾' : '▸'}</button>${esc(projectName)}</td>
+        <td><button type="button" class="ai-project-toggle" data-ai-project-toggle="${esc(projectId)}" data-project-id="${esc(projectId)}" aria-expanded="${expanded}" aria-label="${expanded ? 'Collapse' : 'Expand'} ${esc(projectName)}">${expanded ? '▾' : '▸'}</button>${esc(projectName)}</td>
         ${usageCells(project, periodVolume)}
       </tr>${modelRows}`;
     })
     .join('');
+}
+
+function modelUsageRows(list, periodTotals, forceExpanded = false) {
+  const periodVolume = usageTokenVolume(periodTotals);
+  return list
+    .map((model) => {
+      const modelId = aiModelId(model);
+      const expansionKey = aiModelExpansionKey(model);
+      const expanded = forceExpanded || aiUsageExpandedModels.has(expansionKey);
+      const projectRows = expanded
+        ? (model.by_project || [])
+            .map(
+              (project) => `<tr class="ai-model-project-row" data-project-id="${esc(project.project_id || 'unattributed')}">
+                <td><span class="ai-model-indent">↳</span>${esc(aiProjectLabel(project))}</td>
+                ${usageCells(project, usageTokenVolume(model))}
+              </tr>`,
+            )
+            .join('')
+        : '';
+      return `<tr class="ai-model-row">
+        <td><button type="button" class="ai-project-toggle" data-ai-model-toggle="${esc(modelId)}" aria-expanded="${expanded}" aria-label="${expanded ? 'Collapse' : 'Expand'} ${esc(modelId)}">${expanded ? '▾' : '▸'}</button>${esc(model.provider || 'unknown')} / ${esc(model.model || 'unknown')}</td>
+        ${usageCells(model, periodVolume)}
+      </tr>${projectRows}`;
+    })
+    .join('');
+}
+
+function attributionQualityHtml(quality, workspaces) {
+  const counts = quality?.attribution || {};
+  const warnings = quality?.identity_warnings || [];
+  const warningRows = warnings
+    .map(
+      (warning) => `<li><span class="mono">${esc(warning.workspace_id || 'Unattributed')}</span> · ${esc(warning.code || 'identity_warning')}</li>`,
+    )
+    .join('');
+  const configuredWorkspaces = (workspaces || []).filter(
+    (workspace) => workspace.identity_confidence === 'configured',
+  );
+  const configuredRows = configuredWorkspaces
+    .map(
+      (workspace) => `<li><span class="mono">${esc(workspace.workspace_id)}</span> · configured</li>`,
+    )
+    .join('');
+  return `<details class="ai-attribution-quality">
+    <summary>Attribution quality · ${esc(counts.git || 0)} Git · ${esc(counts.configured || 0)} configured · ${esc(counts.path || 0)} path · ${esc(counts.unattributed || 0)} unattributed</summary>
+    <ul>${configuredRows}${warningRows || '<li>No identity warnings.</li>'}</ul>
+  </details>`;
 }
 
 function paintAiTokensPanel() {
@@ -1095,13 +1173,20 @@ function paintAiTokensPanel() {
     : 'Usage not loaded yet.';
   const projectList = (selectedPeriod?.by_project || []).filter((item) => {
     const query = aiUsageProjectFilter.trim().toLowerCase();
-    return !query || aiProjectLabel(item.project).toLowerCase().includes(query);
+    return !query || aiProjectLabel(item).toLowerCase().includes(query);
+  });
+  const modelList = (selectedPeriod?.by_model || []).filter((item) => {
+    const query = aiUsageModelFilter.trim().toLowerCase();
+    return !query || aiModelId(item).toLowerCase().includes(query);
   });
   const allProjectsExpanded =
     projectList.length > 0 &&
     projectList.every((item) =>
-      aiUsageExpandedProjects.has(aiProjectExpansionKey(item.project || 'unknown')),
+      aiUsageExpandedProjects.has(aiProjectExpansionKey(item.project_id || 'unattributed')),
     );
+  const allModelsExpanded =
+    modelList.length > 0 &&
+    modelList.every((item) => aiUsageExpandedModels.has(aiModelExpansionKey(item)));
 
   let rows = '';
   let totalRow = '';
@@ -1124,17 +1209,12 @@ function paintAiTokensPanel() {
     }
   } else if (aiUsageGroup === 'model') {
     firstCol = 'Model';
-    const list = selectedPeriod?.by_model || [];
     if (!selectedPeriod) {
       rows = `<tr><td colspan="8"><div class="callout">No dated usage events found.</div></td></tr>`;
-    } else if (!list.length) {
-      rows = `<tr><td colspan="8"><div class="callout">No model usage in ${esc(formatAiPeriodLabel(selectedKey))}.</div></td></tr>`;
+    } else if (!modelList.length) {
+      rows = `<tr><td colspan="8"><div class="callout">No matching model usage in ${esc(formatAiPeriodLabel(selectedKey))}.</div></td></tr>`;
     } else {
-      rows = usageDataRows(
-        list,
-        (item) => `${item.provider || 'unknown'} / ${item.model || 'unknown'}`,
-        usageTokenVolume(selectedPeriod),
-      );
+      rows = modelUsageRows(modelList, selectedPeriod);
       totalRow = usageTotalRow(selectedPeriod);
     }
   } else if (aiUsageGroup === 'project') {
@@ -1194,6 +1274,13 @@ function paintAiTokensPanel() {
         </label>
         <button type="button" class="btn" id="aiUsageExpandProjects" ${!projectList.length ? 'disabled' : ''}>${allProjectsExpanded ? 'Collapse all' : 'Expand all'}</button>`
       : '';
+  const modelControls =
+    aiUsageGroup === 'model'
+      ? `<label class="small" for="aiUsageModelFilter">Model
+          <input id="aiUsageModelFilter" value="${esc(aiUsageModelFilter)}" placeholder="Filter models" />
+        </label>
+        <button type="button" class="btn" id="aiUsageExpandModels" ${!modelList.length ? 'disabled' : ''}>${allModelsExpanded ? 'Collapse all' : 'Expand all'}</button>`
+      : '';
   const warningCount = Number(aiUsage?.quality?.warning_count || 0);
   const reconciliation = aiUsage?.quality?.reconciliation || {};
   const reconciliationDifferences = Number(reconciliation.different || 0);
@@ -1212,6 +1299,9 @@ function paintAiTokensPanel() {
         cache ${esc(cache?.status || 'unavailable')}${cache ? ` (${esc(String(cache.hits || 0))} hits, ${esc(String((cache.misses || 0) + (cache.reparsed || 0)))} parsed)` : ''}
       </div>${cache?.status === 'bypassed' ? '<div class="small" style="margin-top: 6px">Cache was bypassed; totals came from a direct read-only scan.</div>' : ''}</div>`
     : '';
+  const attributionQuality = aiUsage
+    ? attributionQualityHtml(aiUsage.quality, aiUsage.by_workspace || [])
+    : '';
 
   return /* HTML */ `
     <div class="ai-filters">
@@ -1224,6 +1314,7 @@ function paintAiTokensPanel() {
         ${groupOptions}
       </select>
       ${projectControls}
+      ${modelControls}
       <button class="btn primary" id="aiUsageBtn" ${!paired || aiBusy ? 'disabled' : ''}>
         ${aiBusy && aiTab === 'tokens' ? 'Aggregating…' : '<span class="arrow">⟳</span> Aggregate'}
       </button>
@@ -1249,6 +1340,7 @@ function paintAiTokensPanel() {
       </table>
     </div>
     ${qualityNotes}
+    ${attributionQuality}
     ${caveats
       ? `<div class="callout" style="margin-top: 18px"><strong>Caveats</strong><ul style="margin: 8px 0 0; padding-left: 18px">${caveats}</ul></div>`
       : ''}
@@ -1433,6 +1525,15 @@ function paintAi() {
       input?.setSelectionRange(input.value.length, input.value.length);
     };
   }
+  if ($('aiUsageModelFilter')) {
+    $('aiUsageModelFilter').oninput = (event) => {
+      aiUsageModelFilter = event.target.value;
+      paintAi();
+      const input = $('aiUsageModelFilter');
+      input?.focus();
+      input?.setSelectionRange(input.value.length, input.value.length);
+    };
+  }
   document.querySelectorAll('[data-ai-project-toggle]').forEach((button) => {
     button.onclick = () => {
       const key = aiProjectExpansionKey(button.dataset.aiProjectToggle || 'unknown');
@@ -1446,13 +1547,39 @@ function paintAi() {
       const selected = aiPeriodSeries().find((row) => row.period === aiUsagePeriodKey);
       const query = aiUsageProjectFilter.trim().toLowerCase();
       const visible = (selected?.by_project || []).filter(
-        (item) => !query || aiProjectLabel(item.project).toLowerCase().includes(query),
+        (item) => !query || aiProjectLabel(item).toLowerCase().includes(query),
       );
-      const keys = visible.map((item) => aiProjectExpansionKey(item.project || 'unknown'));
+      const keys = visible.map((item) =>
+        aiProjectExpansionKey(item.project_id || 'unattributed'),
+      );
       const expand = keys.some((key) => !aiUsageExpandedProjects.has(key));
       keys.forEach((key) => {
         if (expand) aiUsageExpandedProjects.add(key);
         else aiUsageExpandedProjects.delete(key);
+      });
+      paintAi();
+    };
+  }
+  document.querySelectorAll('[data-ai-model-toggle]').forEach((button) => {
+    button.onclick = () => {
+      const key = `${aiUsagePeriod}:${aiUsagePeriodKey}:${button.dataset.aiModelToggle}`;
+      if (aiUsageExpandedModels.has(key)) aiUsageExpandedModels.delete(key);
+      else aiUsageExpandedModels.add(key);
+      paintAi();
+    };
+  });
+  if ($('aiUsageExpandModels')) {
+    $('aiUsageExpandModels').onclick = () => {
+      const selected = aiPeriodSeries().find((row) => row.period === aiUsagePeriodKey);
+      const query = aiUsageModelFilter.trim().toLowerCase();
+      const visible = (selected?.by_model || []).filter(
+        (item) => !query || aiModelId(item).toLowerCase().includes(query),
+      );
+      const keys = visible.map((item) => aiModelExpansionKey(item));
+      const expand = keys.some((key) => !aiUsageExpandedModels.has(key));
+      keys.forEach((key) => {
+        if (expand) aiUsageExpandedModels.add(key);
+        else aiUsageExpandedModels.delete(key);
       });
       paintAi();
     };
@@ -1838,8 +1965,9 @@ function timelineViz(stats) {
 }
 function mergedCommitsByDate() {
   const map = {};
-  paths.forEach((path) => {
-    const byDate = statsByPath[path]?.commitsByDate || {};
+  const sources = statsProjects.length ? statsProjects : paths.map((path) => statsByPath[path]);
+  sources.filter(Boolean).forEach((stats) => {
+    const byDate = stats?.commitsByDate || {};
     Object.entries(byDate).forEach(([day, count]) => {
       map[day] = (map[day] || 0) + (count || 0);
     });
@@ -1857,20 +1985,67 @@ function commitsInBucket(map, item, mode) {
   return 0;
 }
 function topReposForSeries(series, mode, limit = 5) {
-  return paths
-    .map((path) => {
-      const s = statsByPath[path];
+  const canonical = statsProjects.flatMap((project) => project.repositories || []);
+  return (canonical.length ? canonical : paths.map((path) => statsByPath[path]).filter(Boolean))
+    .map((s) => {
       const map = s?.commitsByDate || {};
       const commits = series.reduce((sum, item) => sum + commitsInBucket(map, item, mode), 0);
       return {
-        path,
-        name: s?.name || path.split(/[\\/]/).pop(),
+        path: s?.primary_workspace_id || s?.path,
+        name: s?.repository_name || s?.name || 'Repository',
         commits,
       };
     })
     .filter((row) => row.commits > 0)
     .sort((a, b) => b.commits - a.commits || a.name.localeCompare(b.name))
     .slice(0, limit);
+}
+
+function statsHierarchyRows(projects, forceExpanded = false) {
+  const numberCell = (value) =>
+    value == null ? '<td class="num muted">—</td>' : `<td class="num">${esc(value)}</td>`;
+  return (projects || [])
+    .map((project) => {
+      const projectId = project.project_id || 'unattributed';
+      const projectExpanded = forceExpanded || statsExpandedProjects.has(projectId);
+      const projectRow = `<tr class="stats-project-row">
+        <td><button type="button" class="stats-tree-toggle" data-stats-project-toggle="${esc(projectId)}" aria-expanded="${projectExpanded}">${projectExpanded ? '▾' : '▸'}</button><strong>${esc(project.project_name || project.name || 'Unattributed')}</strong></td>
+        ${numberCell(project.commits7d)}${numberCell(project.commits30d)}${numberCell(project.commitCount)}
+        <td>${esc(project.lastCommitAt ? formatDate(project.lastCommitAt) : '—')}</td>
+        <td>${sparkline(project.commitsByDate || {})}</td>
+      </tr>`;
+      if (!projectExpanded) return projectRow;
+      const repositoryRows = (project.repositories || [])
+        .map((repository) => {
+          const repositoryId = repository.repository_id || 'unattributed';
+          const repositoryExpanded =
+            forceExpanded || statsExpandedRepositories.has(repositoryId);
+          const repositoryRow = `<tr class="stats-repository-row" data-repository-id="${esc(repositoryId)}">
+            <td><span class="stats-tree-indent">↳</span><button type="button" class="stats-tree-toggle" data-stats-repository-toggle="${esc(repositoryId)}" aria-expanded="${repositoryExpanded}">${repositoryExpanded ? '▾' : '▸'}</button>${esc(repository.repository_name || repository.name || 'Repository')}</td>
+            ${numberCell(repository.commits7d)}${numberCell(repository.commits30d)}${numberCell(repository.commitCount)}
+            <td>${esc(repository.lastCommitAt ? formatDate(repository.lastCommitAt) : '—')}</td>
+            <td>${sparkline(repository.commitsByDate || {})}</td>
+          </tr>`;
+          if (!repositoryExpanded) return repositoryRow;
+          const workspaceRows = (repository.workspaces || [])
+            .map((workspace) => {
+              const dirty = Number(workspace.modified || 0) + Number(workspace.untracked || 0);
+              const sync = workspace.error
+                ? workspace.error
+                : `${workspace.ahead ?? '?'} ahead · ${workspace.behind ?? '?'} behind · ${dirty} dirty`;
+              return `<tr class="stats-workspace-row" data-workspace-id="${esc(workspace.workspace_id)}" data-path="${esc(workspace.path || workspace.workspace_id)}" tabindex="0">
+                <td><span class="stats-tree-indent">↳ ↳</span>${workspace.primary ? '<span class="badge pull">Primary</span> ' : ''}${esc(workspace.workspace_name || workspace.name || 'Workspace')}<div class="repo-path">${esc(workspace.workspace_id)}</div></td>
+                <td colspan="3"><span class="branch">⑂ ${esc(workspace.branch || 'Unknown')}</span></td>
+                <td colspan="2" class="small">${esc(sync)} · local refs</td>
+              </tr>`;
+            })
+            .join('');
+          return repositoryRow + workspaceRows;
+        })
+        .join('');
+      return projectRow + repositoryRows;
+    })
+    .join('');
 }
 function sparkline(map, days = 30) {
   const now = new Date();
@@ -1933,14 +2108,14 @@ function paintStats() {
   const cursor = ensureStatsCursor({ commitsByDate: map });
   const series = seriesForView(map, statsPeriod, cursor);
   const tops = topReposForSeries(series, statsPeriod);
-  const rows = boardRows().sort(compareBoard);
+  const hierarchyRows = statsHierarchyRows(statsProjects);
   const hasCache = pulse.cached > 0;
   const coverage = `<span>Coverage <strong>${esc(pulse.cached)}/${esc(pulse.tracked)}</strong></span>`;
   $('statsView').innerHTML = /* HTML */ `
     <div class="heading">
       <div>
-        <h1>Stats across repositories</h1>
-        <p>Combined activity and a side-by-side comparison of tracked repos on this machine.</p>
+        <h1>Stats across projects</h1>
+        <p>Deduplicated repository history with each workspace’s local branch status.</p>
       </div>
       <div class="actions">
         <button
@@ -2004,7 +2179,7 @@ function paintStats() {
     </section>
     <section class="stats-section">
       <div class="section-head">
-        <h2>Repository comparison</h2>
+        <h2>Project, repository, and workspace hierarchy</h2>
       </div>
       <div class="board-wrap">
         <table>
@@ -2018,7 +2193,7 @@ function paintStats() {
                   : ''}"
                 data-board-sort="name"
               >
-                Repo
+                Project / repository / workspace
               </th>
               <th
                 class="sortable ${boardSortKey === 'commits7d'
@@ -2064,27 +2239,8 @@ function paintStats() {
             </tr>
           </thead>
           <tbody>
-            ${rows.length
-              ? rows
-                  .map((row) => {
-                    const num = (value) =>
-                      value == null
-                        ? '<td class="num muted">—</td>'
-                        : `<td class="num">${esc(value)}</td>`;
-                    return /* HTML */ `
-                      <tr class="board-row" data-path="${esc(row.path)}" tabindex="0">
-                        <td><strong>${esc(row.name)}</strong></td>
-                        ${num(row.commits7d)} ${num(row.commits30d)} ${num(row.commitCount)}
-                        <td class="${row.lastCommitAt ? '' : 'muted'}">
-                          ${esc(row.lastCommitAt ? formatDate(row.lastCommitAt) : '—')}
-                        </td>
-                        <td>
-                          ${row.hasCache ? sparkline(row.map) : '<span class="muted">—</span>'}
-                        </td>
-                      </tr>
-                    `;
-                  })
-                  .join('')
+            ${hierarchyRows
+              ? hierarchyRows
               : '<tr><td colspan="6" class="muted">No tracked repositories.</td></tr>'}
           </tbody>
         </table>
@@ -2176,6 +2332,28 @@ function bindLanguagesPage() {
 }
 function bindStatsPage() {
   if ($('statsScan')) $('statsScan').onclick = runScan;
+  document.querySelectorAll('[data-stats-project-toggle]').forEach((button) => {
+    button.onclick = () => {
+      const id = button.dataset.statsProjectToggle;
+      if (statsExpandedProjects.has(id)) statsExpandedProjects.delete(id);
+      else statsExpandedProjects.add(id);
+      paintStats();
+      [...document.querySelectorAll('[data-stats-project-toggle]')]
+        .find((item) => item.dataset.statsProjectToggle === id)
+        ?.focus();
+    };
+  });
+  document.querySelectorAll('[data-stats-repository-toggle]').forEach((button) => {
+    button.onclick = () => {
+      const id = button.dataset.statsRepositoryToggle;
+      if (statsExpandedRepositories.has(id)) statsExpandedRepositories.delete(id);
+      else statsExpandedRepositories.add(id);
+      paintStats();
+      [...document.querySelectorAll('[data-stats-repository-toggle]')]
+        .find((item) => item.dataset.statsRepositoryToggle === id)
+        ?.focus();
+    };
+  });
   document.querySelectorAll('[data-stats-period]').forEach((button) => {
     button.onclick = () => {
       statsPeriod = button.dataset.statsPeriod;
@@ -2372,7 +2550,7 @@ function paintDetail() {
           path,
           refresh: !!statsByPath[path],
         });
-        mergeStats(result.repositories);
+        mergeStats(result.repositories, result.projects);
         render();
       } catch (e) {
         toast('Stats failed: ' + e.message);
@@ -2398,7 +2576,7 @@ async function ensureDetailStats() {
   }
   try {
     const result = await api('stats', { path: detailPath });
-    mergeStats(result.repositories);
+    mergeStats(result.repositories, result.projects);
     render();
   } catch (e) {
     toast('Stats failed: ' + e.message);
@@ -2455,6 +2633,7 @@ function connect() {
     $('pair').disabled = true;
     try {
       statsByPath = {};
+      statsProjects = [];
       await pairWithToken(candidate);
       render();
       close();
@@ -2638,7 +2817,7 @@ async function runScan() {
       `Scanned ${repos.length} repositories at ${new Date(scannedAt).toLocaleString()}`,
     );
     const stats = await api('stats', { all: true, refresh: true });
-    mergeStats(stats.repositories);
+    mergeStats(stats.repositories, stats.projects);
     activity.unshift(
       `Loaded portfolio stats for ${(stats.repositories || []).length} repositories`,
     );
