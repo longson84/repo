@@ -35,6 +35,7 @@ context.window = context;
 context.globalThis = context;
 context.addEventListener = () => {};
 vm.createContext(context);
+vm.runInContext(fs.readFileSync('dist/project_groups.js', 'utf8'), context);
 vm.runInContext(fs.readFileSync('dist/app.js', 'utf8'), context);
 const output = vm.runInContext(process.argv[1], context);
 process.stdout.write(JSON.stringify(output));
