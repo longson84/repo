@@ -109,7 +109,9 @@ Open **Manage tracked repos** to edit grouping without touching the JSON file:
 - **Group selected** can assign repositories to an existing project, create a new project, or make them **Standalone** again.
 - Configured project cards support rename, ungroup, and delete. Rename preserves the stable project ID. Delete is disabled when historical workspace aliases or primary-workspace mappings must be retained. Ungroup is also disabled when it would discard a primary-workspace mapping; remove that mapping from the local identity file first.
 
-Project changes persist locally in `.repo-local/project-identities.json`. Writes use a configuration fingerprint so a stale browser tab cannot overwrite a newer edit. After a save, the dashboard refreshes repository statistics. Previously loaded AI totals are cleared because their project attribution is stale; open **AI → Tokens** and run **Aggregate** again. If the refresh fails, the grouping remains saved and the normal **Scan** button retries the report refresh.
+Repository tracking and project changes are staged inside **Manage tracked repos**. Selecting repositories opens the project pane on the right, and repeated grouping edits do not save or scan individually. **Save & scan** persists the complete draft, closes the manager, and refreshes repository statistics once. Closing with staged changes asks whether to save, discard, or continue editing.
+
+Project changes persist locally in `.repo-local/project-identities.json`. Writes use a configuration fingerprint so a stale browser tab cannot overwrite a newer edit. Previously loaded AI totals are cleared because their project attribution is stale; open **AI → Tokens** and run **Aggregate** again. If the refresh fails, the grouping remains saved and the normal **Scan** button retries the report refresh.
 
 ## What Scan does
 

@@ -36,6 +36,7 @@ let repos = [],
 const statsExpandedProjects = new Set();
 const statsExpandedRepositories = new Set();
 const projectManagerDisabledState = new WeakMap();
+let drawerCloseHandler = null;
 const base = 'http://127.0.0.1:48731';
 const TOKEN_KEY = 'repo.companion.token';
 function readStoredToken() {
@@ -454,6 +455,9 @@ function toast(message) {
   window.toastTimer = setTimeout(() => ($('toast').style.display = 'none'), 6000);
 }
 function open(body, label) {
+  drawerCloseHandler = null;
+  $('drawerBody').classList.remove('project-manager-body');
+  document.querySelector('.drawer')?.classList.remove('project-manager-drawer');
   lastFocus = document.activeElement;
   $('drawerLabel').textContent = label;
   $('drawerBody').innerHTML = body;
@@ -461,6 +465,8 @@ function open(body, label) {
   $('close').focus();
 }
 function close() {
+  if (drawerCloseHandler && drawerCloseHandler() === false) return;
+  drawerCloseHandler = null;
   $('overlay').classList.remove('open');
   lastFocus?.focus();
 }
@@ -3062,13 +3068,22 @@ function projectLifecycleEditor(project, action) {
   `;
 }
 
-function bindProjectManagerRows(choices, selectedRepositoryIds, persistTracking, redraw) {
+function bindProjectManagerRows(
+  choices,
+  selectedRepositoryIds,
+  trackingChanged,
+  redraw,
+  openProjectPane = () => {},
+) {
   document.querySelectorAll('[data-track-workspace]').forEach((control) => {
     control.onchange = () => {
       const row = choices.get(control.dataset.trackWorkspace);
       if (!row) return;
       row.tracked = control.checked;
-      persistTracking();
+      if (!row.tracked && row.repository_id) {
+        selectedRepositoryIds.delete(row.repository_id);
+      }
+      trackingChanged();
     };
   });
   document.querySelectorAll('[data-group-repository]').forEach((control) => {
@@ -3077,12 +3092,13 @@ function bindProjectManagerRows(choices, selectedRepositoryIds, persistTracking,
       if (!repositoryId) return;
       if (control.checked) selectedRepositoryIds.add(repositoryId);
       else selectedRepositoryIds.delete(repositoryId);
+      if (selectedRepositoryIds.size) openProjectPane();
       redraw();
     };
   });
 }
 
-async function submitProjectManagerAction(config, action, persistDraft) {
+function stageProjectManagerAction(config, action) {
   let draft;
   if (action.type === 'assign') {
     draft = assignRepositories(config, action.repositoryIds, action.target).config;
@@ -3099,7 +3115,93 @@ async function submitProjectManagerAction(config, action, persistDraft) {
   } else {
     throw new Error('Unknown project action.');
   }
-  return (await persistDraft(draft)) || draft;
+  return draft;
+}
+
+function projectManagerTrackedPaths(choices) {
+  return [...choices.values()]
+    .filter((row) => row.tracked)
+    .map((row) => row.path)
+    .sort();
+}
+
+function projectManagerDraftChanged(state) {
+  const originalPaths = [...(state.originalPaths || [])].sort();
+  const trackedPaths = projectManagerTrackedPaths(state.choices);
+  const originalProjects = state.originalConfig?.projects || [];
+  const draftProjects = state.draft?.projects || [];
+  return (
+    JSON.stringify(originalPaths) !== JSON.stringify(trackedPaths) ||
+    JSON.stringify(originalProjects) !== JSON.stringify(draftProjects)
+  );
+}
+
+function requestProjectManagerClose(dirty, showConfirmation, closeDrawer) {
+  if (dirty) {
+    showConfirmation();
+    return 'confirm';
+  }
+  closeDrawer();
+  return 'closed';
+}
+
+async function commitProjectManagerDraft(state, hooks = {}) {
+  const trackedPaths = projectManagerTrackedPaths(state.choices);
+  const originalPaths = [...(state.originalPaths || [])].sort();
+  const selectionChanged = JSON.stringify(trackedPaths) !== JSON.stringify(originalPaths);
+  const identityChanged =
+    JSON.stringify(state.draft?.projects || []) !==
+    JSON.stringify(state.originalConfig?.projects || []);
+  const saveSelection =
+    hooks.saveSelection || ((nextPaths) => api('selection', { paths: nextPaths }));
+  const loadIdentity = hooks.loadIdentity || (() => api('project-identities'));
+  const saveIdentity = hooks.saveIdentity || saveProjectIdentityDraft;
+  const applySelectionStatus = hooks.applySelectionStatus || applyStatus;
+  const invalidate =
+    hooks.invalidate ||
+    (() => {
+      invalidateTrackedScopeData();
+      aiUsageInvalidatedByIdentity = true;
+      gitStatsInvalidatedByIdentity = true;
+      render();
+    });
+  const closeDrawer = hooks.closeDrawer || close;
+  const refresh = hooks.refresh || (() => runScan({ throwOnError: true }));
+
+  if (!selectionChanged && !identityChanged) {
+    closeDrawer();
+    return { status: 'unchanged', config: state.originalConfig };
+  }
+
+  let currentConfig = state.originalConfig;
+  if (selectionChanged) {
+    const selection = await saveSelection(trackedPaths);
+    applySelectionStatus(selection);
+    currentConfig = await loadIdentity();
+  }
+
+  let saved = currentConfig;
+  if (identityChanged) {
+    try {
+      saved = await saveIdentity(state.draft, currentConfig.fingerprint);
+    } catch (error) {
+      if (error.status === 409 && error.code === 'identity_config_conflict') {
+        return { status: 'conflict', config: await loadIdentity(), error };
+      }
+      throw error;
+    }
+  }
+
+  invalidate();
+  closeDrawer();
+  try {
+    if (trackedPaths.length) await refresh();
+    return { status: 'saved', config: saved };
+  } catch (error) {
+    toast(`Changes saved; scan failed. Use Scan to retry: ${error.message}`);
+    if (hooks.onRefreshError) hooks.onRefreshError(error);
+    return { status: 'refresh_failed', config: saved, error };
+  }
 }
 
 function showProjectManagerError(error) {
@@ -3167,142 +3269,127 @@ function saveProjectIdentityDraft(draft, fingerprint) {
   });
 }
 
-async function persistProjectIdentityChange(draft, fingerprint, hooks = {}) {
-  let saved;
-  try {
-    saved = await saveProjectIdentityDraft(draft, fingerprint);
-  } catch (error) {
-    if (error.status === 409 && error.code === 'identity_config_conflict') {
-      const current = await api('project-identities');
-      if (hooks.onConflict) hooks.onConflict(current, error);
-      return { status: 'conflict', config: current, error };
-    }
-    throw error;
-  }
-
-  aiUsage = null;
-  aiUsageInvalidatedByIdentity = true;
-  aiUsagePeriodKey = null;
-  aiUsageExpandedProjects.clear();
-  aiUsageExpandedModels.clear();
-  statsByPath = {};
-  statsProjects = [];
-  gitStatsInvalidatedByIdentity = true;
-  (hooks.closeDrawer || close)();
-  render();
-
-  try {
-    await (hooks.refresh || (() => runScan({ throwOnError: true })))();
-    return { status: 'saved', config: saved };
-  } catch (error) {
-    toast(`Project saved; scan failed. Use Scan to retry: ${error.message}`);
-    if (hooks.onRefreshError) hooks.onRefreshError(error);
-    return { status: 'refresh_failed', config: saved, error };
-  }
-}
-
 async function manage() {
   if (!paired) return connect();
+  const originalPaths = [...paths];
   let discoveredWorkspaces = [];
   let choices = projectManagerModel(paths, workspaces, discoveredWorkspaces);
-  let identityConfig = null;
+  let originalConfig = null;
+  let identityDraft = null;
   const selectedRepositoryIds = new Set();
   let bulkEditorMode = null;
   let bulkAssignmentMode = 'existing';
   let lifecycleEditor = null;
-  let persistTimer = 0;
-  let trackingPending = false;
+  let projectPaneOpen = false;
+  let closeConfirmationOpen = false;
   const projectSaveState = { saving: false };
   open(
     /* HTML */ `
       <h3 id="dialogTitle">Manage tracked repos</h3>
       <p>
-        Discover within an approved folder. Select a repository with a github.com remote to include
-        it in reports on ${esc(machineName)}. Group selected repositories into logical projects.
+        Stage repository tracking and project grouping here. Nothing is saved or scanned until you
+        choose Save & scan.
       </p>
-      <label class="small" for="rootPath">Discovery folder</label>
-      <input class="setup-input" id="rootPath" value="${esc(roots[0] || '')}" />
-      <div class="choice-toolbar">
-        <button class="btn" id="discover">Discover repositories</button>
-        <button class="btn" type="button" id="selectAll">Track all</button>
-        <button class="btn" type="button" id="deselectAll">Untrack all</button>
+      <div class="project-manager-layout">
+        <section class="project-manager-repositories">
+          <label class="small" for="rootPath">Discovery folder</label>
+          <input class="setup-input" id="rootPath" value="${esc(roots[0] || '')}" />
+          <div class="choice-toolbar">
+            <button class="btn" id="discover">Discover repositories</button>
+            <button class="btn" type="button" id="selectAll">Track all</button>
+            <button class="btn" type="button" id="deselectAll">Untrack all</button>
+            <button class="btn" type="button" id="showProjects">Projects</button>
+          </div>
+          <div id="choices" class="choice-list"></div>
+          <label class="small" for="repoPath">Or add a repository by full path</label>
+          <input class="setup-input" id="repoPath" placeholder="/path/to/a/repository" />
+          <button class="btn" id="addPath">Add path</button>
+          <p class="note">
+            Approved folders: ${roots.map(esc).join(', ')}. Restart with another --root to approve
+            an additional folder.
+          </p>
+        </section>
+        <aside id="projectManagerPane" class="project-manager-pane" hidden>
+          <div id="projectManagerActions" class="project-manager-actions"></div>
+        </aside>
       </div>
-      <div id="choices" class="choice-list"></div>
-      <div id="projectManagerActions" class="project-manager-actions"></div>
-      <label class="small" for="repoPath">Or add a repository by full path</label>
-      <input class="setup-input" id="repoPath" placeholder="/path/to/a/repository" />
-      <button class="btn" id="addPath">Add path</button>
-      <p class="note">
-        Approved folders: ${roots.map(esc).join(', ')}. Restart with another --root to approve an
-        additional folder.
-      </p>
-      <p class="note" role="status" id="settingsError"></p>
+      <div class="project-manager-footer">
+        <p class="note" role="status" id="settingsError"></p>
+        <div id="projectCloseConfirm" class="project-close-confirm" hidden>
+          <strong>Save your staged changes?</strong>
+          <p class="small">Closing now would discard repository and project changes.</p>
+          <div class="project-row-actions">
+            <button class="btn primary" type="button" id="confirmSaveProjectManager">
+              Save & scan
+            </button>
+            <button class="btn" type="button" id="discardProjectManager">Discard</button>
+            <button class="btn" type="button" id="continueProjectManager">Continue editing</button>
+          </div>
+        </div>
+        <div class="project-row-actions" id="projectManagerFooterActions">
+          <button class="btn" type="button" id="cancelProjectManager">Cancel</button>
+          <button class="btn primary" type="button" id="saveProjectManager" disabled>
+            Save & scan
+          </button>
+        </div>
+      </div>
     `,
     'Tracking settings',
   );
-  const applySelection = async () => {
-    persistTimer = 0;
-    try {
-      const result = await api('selection', {
-        paths: [...choices.values()].filter((row) => row.tracked).map((row) => row.path),
-      });
-      applyStatus(result);
-      invalidateTrackedScopeData();
-      identityConfig = await api('project-identities');
-      choices = projectManagerModel(paths, workspaces, discoveredWorkspaces);
-      const trackedRepositoryIds = new Set(
-        [...choices.values()]
-          .filter((row) => row.tracked && row.repository_id)
-          .map((row) => row.repository_id),
-      );
-      for (const repositoryId of [...selectedRepositoryIds]) {
-        if (!trackedRepositoryIds.has(repositoryId)) selectedRepositoryIds.delete(repositoryId);
-      }
-      trackingPending = false;
-      render();
-      draw();
-      const cleanup = trackingReconciliationMessage(result.reconciliation);
-      $('settingsError').textContent =
-        cleanup ||
-        `Tracking ${paths.length} selected GitHub repositor${paths.length === 1 ? 'y' : 'ies'}.`;
-    } catch (e) {
-      trackingPending = false;
-      draw();
-      $('settingsError').textContent = e.message;
-    }
+  $('drawerBody').classList.add('project-manager-body');
+  document.querySelector('.drawer')?.classList.add('project-manager-drawer');
+
+  const managerState = () => ({
+    originalPaths,
+    choices,
+    originalConfig,
+    draft: identityDraft,
+  });
+  const isDirty = () =>
+    !!originalConfig && !!identityDraft && projectManagerDraftChanged(managerState());
+  const closeManagerNow = () => {
+    drawerCloseHandler = null;
+    close();
   };
-  const persist = () => {
-    clearTimeout(persistTimer);
-    trackingPending = true;
-    draw();
-    persistTimer = setTimeout(applySelection, 120);
-  };
+  drawerCloseHandler = () =>
+    requestProjectManagerClose(
+      isDirty(),
+      () => {
+        closeConfirmationOpen = true;
+        draw();
+      },
+      () => {},
+    ) !== 'confirm';
+
   const draw = () => {
-    $('choices').innerHTML = projectManagerRows(
-      choices,
-      selectedRepositoryIds,
-      identityConfig,
-      trackingPending,
-    );
-    bindProjectManagerRows(choices, selectedRepositoryIds, persist, draw);
-    if (!identityConfig) {
+    $('choices').innerHTML = projectManagerRows(choices, selectedRepositoryIds, identityDraft);
+    bindProjectManagerRows(choices, selectedRepositoryIds, draw, draw, () => {
+      projectPaneOpen = true;
+      bulkEditorMode = 'bulk';
+    });
+    $('projectManagerPane').hidden = !projectPaneOpen;
+    $('projectCloseConfirm').hidden = !closeConfirmationOpen;
+    $('projectManagerFooterActions').hidden = closeConfirmationOpen;
+    $('saveProjectManager').disabled = !isDirty() || projectSaveState.saving;
+    if (!identityDraft) {
       $('projectManagerActions').innerHTML = '<p class="small">Loading project grouping…</p>';
       return;
     }
-    const visibleRepositoryIds = [...choices.values()].map((row) => row.repository_id);
-    const groupingLocked = !projectIdentityConfigEditable(identityConfig);
+    const visibleRepositoryIds = [...choices.values()]
+      .filter((row) => row.tracked)
+      .map((row) => row.repository_id);
+    const groupingLocked = !projectIdentityConfigEditable(identityDraft);
+    if (
+      bulkEditorMode === 'bulk' &&
+      bulkAssignmentMode === 'existing' &&
+      !(identityDraft.projects || []).length
+    ) {
+      bulkAssignmentMode = 'new';
+    }
     $('projectManagerActions').innerHTML = /* HTML */ `
       <div class="project-bulk-toolbar">
         <strong>${selectedRepositoryIds.size} selected</strong>
         <div class="project-row-actions">
-          <button
-            class="btn primary"
-            type="button"
-            id="groupSelected"
-            ${selectedRepositoryIds.size && !groupingLocked ? '' : 'disabled'}
-          >
-            Group selected
-          </button>
           <button
             class="btn"
             type="button"
@@ -3314,15 +3401,15 @@ async function manage() {
         </div>
       </div>
       ${bulkEditorMode === 'bulk'
-        ? projectBulkEditor(identityConfig, selectedRepositoryIds, bulkAssignmentMode)
+        ? projectBulkEditor(identityDraft, selectedRepositoryIds, bulkAssignmentMode)
         : ''}
       <h4>Configured projects</h4>
       <div class="configured-project-list">
-        ${configuredProjectCards(identityConfig, visibleRepositoryIds, groupingLocked)}
+        ${configuredProjectCards(identityDraft, visibleRepositoryIds, groupingLocked)}
       </div>
     `;
     if (lifecycleEditor) {
-      const project = (identityConfig.projects || []).find(
+      const project = (identityDraft.projects || []).find(
         (item) => item.id === lifecycleEditor.projectId,
       );
       const container = document.querySelector(
@@ -3334,50 +3421,26 @@ async function manage() {
     }
     bindProjectManagerActions();
   };
-  const completeProjectAction = async (action, focusSelector) => {
+  const completeProjectAction = (action, focusSelector) => {
     try {
-      await runProjectManagerSaveOnce(
-        projectSaveState,
-        async () => {
-          let outcome = null;
-          identityConfig = await submitProjectManagerAction(
-            identityConfig,
-            action,
-            async (draft) => {
-              outcome = await persistProjectIdentityChange(draft, identityConfig.fingerprint);
-              return outcome.config;
-            },
-          );
-          if (outcome.status === 'conflict') {
-            draw();
-            $('settingsError').textContent =
-              'Project grouping changed in another editor. Review the latest configuration and repeat your action.';
-            return outcome;
-          }
-          bulkEditorMode = null;
-          lifecycleEditor = null;
-          selectedRepositoryIds.clear();
-          return outcome;
-        },
-        setProjectManagerSaving,
-      );
+      identityDraft = stageProjectManagerAction(identityDraft, action);
+      bulkEditorMode = null;
+      lifecycleEditor = null;
+      selectedRepositoryIds.clear();
+      closeConfirmationOpen = false;
+      draw();
+      $('settingsError').textContent = 'Change staged. Save & scan when you are finished.';
     } catch (error) {
       showProjectManagerError(error);
       restoreProjectManagerFocus(focusSelector);
     }
   };
   const bindProjectManagerActions = () => {
-    $('groupSelected').onclick = () => {
-      bulkEditorMode = 'bulk';
-      lifecycleEditor = null;
-      draw();
-      focusFirstProjectEditorControl('[data-project-editor="bulk"]');
-    };
     $('clearProjectSelection').onclick = () => {
       selectedRepositoryIds.clear();
       bulkEditorMode = null;
       draw();
-      restoreProjectManagerFocus('#groupSelected');
+      restoreProjectManagerFocus('#showProjects');
     };
     if (bulkEditorMode === 'bulk') {
       $('projectMode').onchange = () => {
@@ -3388,7 +3451,7 @@ async function manage() {
       $('projectCancel').onclick = () => {
         bulkEditorMode = null;
         draw();
-        restoreProjectManagerFocus('#groupSelected');
+        restoreProjectManagerFocus('#showProjects');
       };
       $('projectApply').onclick = () => {
         if (!selectedRepositoryIds.size) {
@@ -3398,7 +3461,7 @@ async function manage() {
         if (bulkAssignmentMode === 'standalone') {
           completeProjectAction(
             { type: 'standalone', repositoryIds: [...selectedRepositoryIds] },
-            '#groupSelected',
+            '#showProjects',
           );
           return;
         }
@@ -3408,7 +3471,7 @@ async function manage() {
             : { projectId: $('projectTarget').value };
         completeProjectAction(
           { type: 'assign', repositoryIds: [...selectedRepositoryIds], target },
-          '#groupSelected',
+          '#showProjects',
         );
       };
     }
@@ -3466,26 +3529,32 @@ async function manage() {
     }
   };
   draw();
+  $('showProjects').onclick = () => {
+    projectPaneOpen = true;
+    draw();
+  };
   $('selectAll').onclick = () => {
     choices.forEach((row) => {
       row.tracked = true;
     });
     draw();
-    persist();
   };
   $('deselectAll').onclick = () => {
     choices.forEach((row) => {
       row.tracked = false;
     });
     draw();
-    persist();
   };
   $('discover').onclick = async () => {
     $('discover').disabled = true;
     try {
       const result = await api('discover', { root: $('rootPath').value });
       discoveredWorkspaces = [...discoveredWorkspaces, ...(result.repositories || [])];
-      choices = projectManagerModel(paths, workspaces, discoveredWorkspaces);
+      choices = projectManagerModel(
+        projectManagerTrackedPaths(choices),
+        workspaces,
+        discoveredWorkspaces,
+      );
       draw();
       const excluded = Number(result.excluded_candidate_count || 0);
       $('settingsError').textContent =
@@ -3514,13 +3583,46 @@ async function manage() {
       });
       draw();
       $('repoPath').value = '';
-      persist();
     }
   };
-  try {
-    identityConfig = await api('project-identities');
+  const saveAndScan = async () => {
+    await runProjectManagerSaveOnce(
+      projectSaveState,
+      async () => {
+        try {
+          const outcome = await commitProjectManagerDraft(managerState(), {
+            closeDrawer: closeManagerNow,
+          });
+          if (outcome.status === 'conflict') {
+            originalConfig = outcome.config;
+            identityDraft = JSON.parse(JSON.stringify(outcome.config));
+            closeConfirmationOpen = false;
+            draw();
+            $('settingsError').textContent =
+              'Project grouping changed in another editor. The latest configuration was loaded; repeat your changes.';
+          }
+          return outcome;
+        } catch (error) {
+          showProjectManagerError(error);
+          return { status: 'error', error };
+        }
+      },
+      setProjectManagerSaving,
+    );
+  };
+  $('saveProjectManager').onclick = saveAndScan;
+  $('confirmSaveProjectManager').onclick = saveAndScan;
+  $('cancelProjectManager').onclick = close;
+  $('discardProjectManager').onclick = closeManagerNow;
+  $('continueProjectManager').onclick = () => {
+    closeConfirmationOpen = false;
     draw();
-    $('settingsError').textContent = projectIdentityWarningsMessage(identityConfig);
+  };
+  try {
+    originalConfig = await api('project-identities');
+    identityDraft = JSON.parse(JSON.stringify(originalConfig));
+    draw();
+    $('settingsError').textContent = projectIdentityWarningsMessage(identityDraft);
   } catch (error) {
     $('settingsError').textContent = `Could not load project grouping: ${error.message}`;
   }

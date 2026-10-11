@@ -358,29 +358,39 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
             "const track={dataset:{trackWorkspace:'/work/a'},checked:false};"
             "document.querySelectorAll=(selector)=>selector==='[data-group-repository]'?[group]:"
             "selector==='[data-track-workspace]'?[track]:[];"
-            "const choices=new Map([['/work/a',{workspace_id:'/work/a',tracked:true}]]);"
-            "const selected=new Set(); let trackingWrites=0; let redraws=0;"
-            "bindProjectManagerRows(choices,selected,()=>{trackingWrites+=1},()=>{redraws+=1});"
-            "group.onchange(); const afterGroup={trackingWrites,selected:[...selected],redraws};"
-            "track.onchange(); return {afterGroup,afterTrack:{trackingWrites,tracked:choices.get('/work/a').tracked}}; })()"
+            "const choices=new Map([['/work/a',{workspace_id:'/work/a',"
+            "repository_id:'repo:shared',tracked:true}]]);"
+            "const selected=new Set(); let trackingWrites=0; let redraws=0; let paneOpens=0;"
+            "bindProjectManagerRows(choices,selected,()=>{trackingWrites+=1},()=>{redraws+=1},"
+            "()=>{paneOpens+=1});"
+            "group.onchange(); const afterGroup={trackingWrites,selected:[...selected],redraws,paneOpens};"
+            "track.onchange(); return {afterGroup,afterTrack:{trackingWrites,"
+            "tracked:choices.get('/work/a').tracked,selected:[...selected]}}; })()"
         )
 
         self.assertEqual(
             result["afterGroup"],
-            {"trackingWrites": 0, "selected": ["repo:shared"], "redraws": 1},
+            {
+                "trackingWrites": 0,
+                "selected": ["repo:shared"],
+                "redraws": 1,
+                "paneOpens": 1,
+            },
         )
-        self.assertEqual(result["afterTrack"], {"trackingWrites": 1, "tracked": False})
+        self.assertEqual(
+            result["afterTrack"],
+            {"trackingWrites": 1, "tracked": False, "selected": []},
+        )
 
-    def test_project_action_hands_complete_deduplicated_draft_to_persistence(self):
+    def test_project_action_builds_complete_deduplicated_draft(self):
         result = self.render(
             "(() => { const config={version:1,projects:[{id:'old',name:'Old',"
             "repositories:['repo:a'],primary_workspaces:{},workspace_aliases:[]}]};"
-            "let persisted=null; return submitProjectManagerAction(config,{type:'assign',"
-            "repositoryIds:['repo:a','repo:b','repo:b'],target:{name:'General'}},"
-            "draft=>{persisted=draft; return draft;}).then(draft=>({draft,persisted})); })()"
+            "const draft=stageProjectManagerAction(config,{type:'assign',"
+            "repositoryIds:['repo:a','repo:b','repo:b'],target:{name:'General'}});"
+            "return {draft}; })()"
         )
 
-        self.assertEqual(result["draft"], result["persisted"])
         general = next(
             project
             for project in result["draft"]["projects"]
@@ -389,21 +399,82 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
         self.assertEqual(general["repositories"], ["repo:a", "repo:b"])
         self.assertEqual(result["draft"]["version"], 1)
 
+    def test_project_actions_stage_without_persisting_or_scanning(self):
+        result = self.render(
+            "(() => { const original={version:1,projects:[]};"
+            "const staged=stageProjectManagerAction(original,{type:'assign',repositoryIds:['repo:a'],"
+            "target:{name:'General'}}); return {original,staged}; })()"
+        )
+
+        self.assertEqual(result["original"]["projects"], [])
+        self.assertEqual(result["staged"]["projects"][0]["name"], "General")
+        self.assertEqual(result["staged"]["projects"][0]["repositories"], ["repo:a"])
+
+    def test_project_manager_commit_saves_once_and_scans_once(self):
+        result = self.render(
+            "(() => { let selectionCalls=0,identityCalls=0,scanCalls=0,closed=0;"
+            "const original={version:1,projects:[],fingerprint:'old'};"
+            "const first=stageProjectManagerAction(original,{type:'assign',"
+            "repositoryIds:['repo:a'],target:{name:'General'}});"
+            "const draft=stageProjectManagerAction(first,{type:'assign',"
+            "repositoryIds:['repo:b'],target:{projectId:'general'}});"
+            "const choices=new Map([['/work/a',{path:'/work/a',tracked:true}],"
+            "['/work/b',{path:'/work/b',tracked:true}]]);"
+            "return commitProjectManagerDraft({originalPaths:[],choices,originalConfig:original,draft},{"
+            "saveSelection:async paths=>{selectionCalls+=1;return {paths,workspaces:[],repositories:[]}},"
+            "loadIdentity:async()=>({...original,fingerprint:'after-selection'}),"
+            "saveIdentity:async(config,fingerprint)=>{identityCalls+=1;return {...config,fingerprint}},"
+            "applySelectionStatus:()=>{},invalidate:()=>{},closeDrawer:()=>{closed+=1},"
+            "refresh:async()=>{scanCalls+=1}}).then(outcome=>({outcome:outcome.status,selectionCalls,"
+            "identityCalls,scanCalls,closed})); })()"
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "outcome": "saved",
+                "selectionCalls": 1,
+                "identityCalls": 1,
+                "scanCalls": 1,
+                "closed": 1,
+            },
+        )
+
+    def test_dirty_project_manager_close_requires_confirmation(self):
+        result = self.render(
+            "(() => { let prompted=0,closed=0; const dirty=requestProjectManagerClose(true,"
+            "()=>{prompted+=1},()=>{closed+=1}); const clean=requestProjectManagerClose(false,"
+            "()=>{prompted+=1},()=>{closed+=1}); return {dirty,clean,prompted,closed}; })()"
+        )
+
+        self.assertEqual(
+            result,
+            {"dirty": "confirm", "clean": "closed", "prompted": 1, "closed": 1},
+        )
+
+    def test_project_manager_uses_split_layout_with_right_project_pane(self):
+        script = (ROOT / "dist" / "app.js").read_text()
+
+        self.assertIn('class="project-manager-layout"', script)
+        self.assertIn('id="projectManagerPane"', script)
+        self.assertIn('class="project-manager-footer"', script)
+
     def test_project_action_error_preserves_working_config_and_focus_helper_restores_trigger(
         self,
     ):
         result = self.render(
             "(() => { const config={version:1,projects:[{id:'old',name:'Old',repositories:[],"
+            "primary_workspaces:{},workspace_aliases:[]},{id:'other',name:'Other',repositories:[],"
             "primary_workspaces:{},workspace_aliases:[]}]}; const before=JSON.stringify(config);"
             "let focused=false; document.querySelector=()=>({focus(){focused=true}});"
-            "return submitProjectManagerAction(config,{type:'rename',projectId:'old',name:'New'},"
-            "()=>Promise.reject(new Error('Server says duplicate name'))).catch(error=>{"
+            "try { stageProjectManagerAction(config,{type:'rename',projectId:'old',name:'Other'}); }"
+            "catch(error) {"
             "showProjectManagerError(error); restoreProjectManagerFocus('[data-rename-project=old]');"
-            "return {unchanged:JSON.stringify(config)===before,error:document.getElementById('settingsError').textContent,focused};}); })()"
+            "return {unchanged:JSON.stringify(config)===before,error:document.getElementById('settingsError').textContent,focused}; } })()"
         )
 
         self.assertTrue(result["unchanged"])
-        self.assertEqual(result["error"], "Server says duplicate name")
+        self.assertEqual(result["error"], "Project name already exists.")
         self.assertTrue(result["focused"])
 
     def test_api_exposes_structured_http_error(self):
@@ -441,12 +512,17 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
 
     def test_project_identity_conflict_reloads_and_keeps_editor_open(self):
         result = self.render(
-            "(() => { let calls=0; fetch=async()=>{calls+=1; return calls===1?"
-            "{ok:false,status:409,json:async()=>({error:'Conflict',code:'identity_config_conflict'})}:"
-            "{ok:true,status:200,json:async()=>({version:1,projects:[{id:'newer',name:'Newer'}],"
-            "fingerprint:'newer-fingerprint',warnings:[]})};}; aiUsage={old:true};"
-            "let closed=0,refreshed=0; return persistProjectIdentityChange({version:1,projects:[]},"
-            "'stale',{closeDrawer:()=>{closed+=1},refresh:()=>{refreshed+=1}}).then(result=>({"
+            "(() => { const conflict=new Error('Conflict'); conflict.status=409;"
+            "conflict.code='identity_config_conflict'; aiUsage={old:true};"
+            "const original={version:1,projects:[],fingerprint:'stale'};"
+            "const draft=stageProjectManagerAction(original,{type:'assign',"
+            "repositoryIds:['repo:a'],target:{name:'General'}});"
+            "const choices=new Map([['/work/a',{path:'/work/a',tracked:true}]]);"
+            "let closed=0,refreshed=0; return commitProjectManagerDraft({"
+            "originalPaths:['/work/a'],choices,originalConfig:original,draft},{"
+            "saveIdentity:async()=>{throw conflict},loadIdentity:async()=>({version:1,"
+            "projects:[{id:'newer',name:'Newer'}],fingerprint:'newer-fingerprint',warnings:[]}),"
+            "closeDrawer:()=>{closed+=1},refresh:()=>{refreshed+=1}}).then(result=>({"
             "status:result.status,project:result.config.projects[0].id,closed,refreshed,"
             "usageStillLoaded:aiUsage.old===true})); })()"
         )
@@ -464,14 +540,17 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
 
     def test_project_identity_save_invalidates_ai_and_reports_refresh_failure(self):
         result = self.render(
-            "(() => { fetch=async(_url,options)=>({ok:true,status:200,json:async()=>({version:1,"
-            "projects:JSON.parse(options.body).projects,fingerprint:'fresh',warnings:[]})});"
-            "paired=true; paths=['/work/old']; aiUsage={totals:{input_tokens:99}};"
+            "(() => { paired=true; paths=['/work/old']; aiUsage={totals:{input_tokens:99}};"
             "aiUsageInvalidatedByIdentity=false;"
             "statsByPath={'/work/old':{commitCount:7}}; statsProjects=[{project_id:'old',"
             "project_name:'Old grouping',commitCount:7,repositories:[]}];"
             "gitStatsInvalidatedByIdentity=false; let closed=0;"
-            "return persistProjectIdentityChange({version:1,projects:[]},'old',{"
+            "const original={version:1,projects:[],fingerprint:'old'};"
+            "const draft=stageProjectManagerAction(original,{type:'assign',"
+            "repositoryIds:['repo:a'],target:{name:'General'}});"
+            "const choices=new Map([['/work/old',{path:'/work/old',tracked:true}]]);"
+            "return commitProjectManagerDraft({originalPaths:['/work/old'],choices,"
+            "originalConfig:original,draft},{saveIdentity:async config=>({...config,fingerprint:'fresh'}),"
             "closeDrawer:()=>{closed+=1},refresh:()=>Promise.reject(new Error('offline'))})"
             ".then(result=>({status:result.status,closed,aiUsage,invalidated:aiUsageInvalidatedByIdentity,"
             "gitInvalidated:gitStatsInvalidatedByIdentity,statsProjects,statsByPath,"
@@ -489,7 +568,7 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
         self.assertEqual(result["numbers"]["commits"], 0)
         self.assertNotIn("Old grouping", result["statsPanel"])
         self.assertIn("Project grouping changed", result["statsPanel"])
-        self.assertIn("Project saved; scan failed", result["message"])
+        self.assertIn("Changes saved; scan failed", result["message"])
         self.assertIn("Project grouping changed", result["panel"])
         self.assertIn("Aggregate", result["panel"])
 
