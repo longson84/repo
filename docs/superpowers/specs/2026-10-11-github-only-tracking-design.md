@@ -27,12 +27,12 @@ views from applying different meanings of “project.”
 
 ## Canonical GitHub identity
 
-The companion enumerates all remotes for a worktree and normalizes supported HTTPS and SSH forms
-without retaining credentials, query strings, or fragments.
+The companion enumerates all remotes for a worktree, including separate fetch and push URLs, and
+normalizes supported HTTPS and SSH forms without retaining credentials, query strings, or fragments.
 
 Canonical selection is deterministic:
 
-1. use `origin` when `origin` normalizes to `github.com`;
+1. use `origin` when any fetch or push URL for `origin` normalizes to `github.com`;
 2. otherwise inspect remotes in remote-name order and use the first normalized GitHub remote;
 3. if no GitHub remote is available, the workspace is ineligible.
 
