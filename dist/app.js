@@ -25,6 +25,9 @@ let repos = [],
   statsCursor = null,
   boardSortKey = 'commits30d',
   boardSortDir = -1,
+  locSortKey = 'total',
+  locSortDir = -1,
+  locMetric = 'code',
   sortKey = 'name',
   sortDir = 1;
 const base = 'http://127.0.0.1:48731';
@@ -78,7 +81,11 @@ async function pairWithToken(candidate) {
 }
 async function api(path, body) {
   const controller = new AbortController();
-  const long = path === 'scan' || (path === 'stats' && body);
+  const long =
+    path === 'scan' ||
+    path === 'ai/detect' ||
+    path === 'ai/sessions' ||
+    (path === 'stats' && body);
   const timer = setTimeout(() => controller.abort(), long ? 900000 : 20000);
   try {
     const response = await fetch(base + '/api/' + path, {
@@ -101,6 +108,165 @@ function mergeStats(list) {
   (list || []).forEach((s) => {
     if (s?.path) statsByPath[s.path] = s;
   });
+}
+function emptyLines() {
+  return { additions: 0, deletions: 0, net: 0 };
+}
+function addLines(bucket, piece) {
+  bucket.additions += piece?.additions || 0;
+  bucket.deletions += piece?.deletions || 0;
+  bucket.net += piece?.net != null ? piece.net : (piece?.additions || 0) - (piece?.deletions || 0);
+  return bucket;
+}
+function formatCompact(n) {
+  if (n == null || Number.isNaN(Number(n))) return '—';
+  const value = Math.round(Number(n));
+  const body = Math.abs(value).toLocaleString('en-US');
+  return (value < 0 ? '−' : '') + body;
+}
+/** 1,230,050 → 1,230k */
+function formatKilo(n) {
+  if (n == null || Number.isNaN(Number(n))) return '—';
+  const value = Math.round(Number(n));
+  if (value === 0) return '0';
+  const abs = Math.abs(value);
+  if (abs < 1000) return (value < 0 ? '−' : '') + String(abs);
+  return (value < 0 ? '−' : '') + Math.round(abs / 1000).toLocaleString('en-US') + 'k';
+}
+function locMetricField() {
+  return locMetric === 'complexity' ? 'complexity' : 'code';
+}
+function formatLocCell(n) {
+  if (locMetric === 'complexity') return formatCompact(n);
+  return formatKilo(n);
+}
+function locLanguageMatrix() {
+  const field = locMetricField();
+  const totals = new Map();
+  const rows = paths.map((path) => {
+    const s = statsByPath[path];
+    const byLang = {};
+    (s?.locByLanguage || []).forEach((lang) => {
+      const name = lang?.name;
+      const value = lang?.[field] || 0;
+      if (!name || !value) return;
+      byLang[name] = value;
+      totals.set(name, (totals.get(name) || 0) + value);
+    });
+    return {
+      path,
+      name: s?.name || path.split(/[\\/]/).pop(),
+      byLang,
+      total: Object.values(byLang).reduce((sum, n) => sum + n, 0),
+      hasLoc: s?.locCode != null,
+    };
+  });
+  const languages = [...totals.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([name]) => name);
+  rows.sort((a, b) => {
+    if (locSortKey === 'name') {
+      const cmp = a.name.localeCompare(b.name);
+      return locSortDir > 0 ? cmp : -cmp;
+    }
+    const av = locSortKey === 'total' ? a.total : a.byLang[locSortKey] || 0;
+    const bv = locSortKey === 'total' ? b.total : b.byLang[locSortKey] || 0;
+    if (av === bv) return a.name.localeCompare(b.name);
+    return av < bv ? -locSortDir : locSortDir;
+  });
+  return { languages, rows };
+}
+function locSortClass(key) {
+  if (locSortKey !== key) return 'sortable';
+  return `sortable ${locSortDir > 0 ? 'sorted-asc' : 'sorted-desc'}`;
+}
+function locMatrixHtml() {
+  const { languages, rows } = locLanguageMatrix();
+  if (!languages.length) {
+    return '<p class="note">No language matrix yet. Scan after scc is available.</p>';
+  }
+  const metricNote =
+    locMetric === 'complexity'
+      ? 'Cells are scc complexity estimates (not thousands).'
+      : 'Code lines in thousands (1,230k = 1,230,000).';
+  return /* HTML */ `
+    <div class="board-wrap loc-matrix">
+      <table>
+        <thead>
+          <tr>
+            <th class="sticky-col ${locSortClass('name')}" data-loc-sort="name">Repo</th>
+            ${languages
+              .map(
+                (lang) =>
+                  `<th class="${locSortClass(lang)}" data-loc-sort="${esc(lang)}" title="${esc(lang)}">${esc(lang)}</th>`,
+              )
+              .join('')}
+            <th class="${locSortClass('total')}" data-loc-sort="total">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map((row) => {
+              const cells = languages
+                .map((lang) => {
+                  const value = row.byLang[lang];
+                  if (!value) return '<td class="num muted">—</td>';
+                  return `<td class="num" title="${esc(formatCompact(value))}">${esc(formatLocCell(value))}</td>`;
+                })
+                .join('');
+              return /* HTML */ `
+                <tr class="board-row" data-path="${esc(row.path)}" tabindex="0">
+                  <td class="sticky-col"><strong>${esc(row.name)}</strong></td>
+                  ${cells}
+                  <td class="num ${row.total ? '' : 'muted'}" title="${esc(formatCompact(row.total))}">
+                    ${esc(row.total ? formatLocCell(row.total) : '—')}
+                  </td>
+                </tr>
+              `;
+            })
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      Via scc (code excludes comments). Skips docs/config/markup noise, TypeScript typings, and other
+      non-app languages. ${metricNote} Click a column header to sort.
+    </p>
+  `;
+}
+function formatLines(bucket) {
+  if (!bucket || (bucket.additions == null && bucket.deletions == null)) return '—';
+  const additions = bucket.additions || 0;
+  const deletions = bucket.deletions || 0;
+  const net = bucket.net != null ? bucket.net : additions - deletions;
+  const netLabel = net > 0 ? `+${formatCompact(net)}` : formatCompact(net);
+  return `+${formatCompact(additions)} / −${formatCompact(deletions)} / ${netLabel}`;
+}
+function sumLinesRange(map, start, days) {
+  const total = emptyLines();
+  for (let i = 0; i < days; i += 1) {
+    const day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    addLines(total, map[dateKey(day)]);
+  }
+  return total;
+}
+function linesForBucket(map, item, mode) {
+  if (!map) return emptyLines();
+  if (mode === 'day') return addLines(emptyLines(), map[item.period]);
+  if (mode === 'week' && item.start) return sumLinesRange(map, item.start, 7);
+  if (mode === 'month' && /^\d{4}-\d{2}$/.test(item.period)) {
+    const [y, m] = item.period.split('-').map(Number);
+    const start = new Date(y, m - 1, 1);
+    return sumLinesRange(map, start, new Date(y, m, 0).getDate());
+  }
+  if (mode === 'year' && /^\d{4}$/.test(String(item.period))) {
+    const total = emptyLines();
+    Object.entries(map).forEach(([day, piece]) => {
+      if (day.startsWith(String(item.period))) addLines(total, piece);
+    });
+    return total;
+  }
+  return emptyLines();
 }
 function formatBytes(n) {
   if (n == null || Number.isNaN(n)) return '—';
@@ -375,14 +541,20 @@ function render() {
   const route = parseRoute();
   const onDetail = route.view === 'repo' && !other;
   const onStats = route.view === 'stats' && !other;
-  $('overviewView').hidden = onDetail || onStats;
+  const onLanguages = route.view === 'languages' && !other;
+  const onAi = route.view === 'ai' && !other;
+  $('overviewView').hidden = onDetail || onStats || onLanguages || onAi;
   $('detailView').hidden = !onDetail;
   $('statsView').hidden = !onStats;
+  $('languagesView').hidden = !onLanguages;
+  $('aiView').hidden = !onAi;
   document.querySelectorAll('.nav button').forEach((button) => {
     button.classList.toggle(
       'active',
       (button.id === 'overviewNav' && route.view === 'overview') ||
-        (button.id === 'statsNav' && route.view === 'stats'),
+        (button.id === 'statsNav' && route.view === 'stats') ||
+        (button.id === 'languagesNav' && route.view === 'languages') ||
+        (button.id === 'aiNav' && route.view === 'ai'),
     );
   });
   if (onDetail) {
@@ -395,6 +567,14 @@ function render() {
     paintStats();
     $('crumb').innerHTML =
       'Theana <span style="padding:0 10px">/</span> <a href="#/" style="color:inherit">Repositories</a> <span style="padding:0 10px">/</span> <b>Stats</b>';
+  } else if (onLanguages) {
+    paintLanguages();
+    $('crumb').innerHTML =
+      'Theana <span style="padding:0 10px">/</span> <a href="#/" style="color:inherit">Repositories</a> <span style="padding:0 10px">/</span> <b>Languages</b>';
+  } else if (onAi) {
+    paintAi();
+    $('crumb').innerHTML =
+      'Theana <span style="padding:0 10px">/</span> <b>AI</b>';
   } else {
     detailPath = null;
     $('crumb').innerHTML =
@@ -428,6 +608,8 @@ function parseRoute() {
     return { view: 'repo', path: decodeURIComponent(raw.slice('/repo?'.length)) };
   }
   if (raw === '/stats' || raw.startsWith('/stats?')) return { view: 'stats' };
+  if (raw === '/languages' || raw.startsWith('/languages?')) return { view: 'languages' };
+  if (raw === '/ai' || raw.startsWith('/ai?') || raw.startsWith('/ai/')) return { view: 'ai' };
   return { view: 'overview' };
 }
 function parseHash() {
@@ -445,6 +627,735 @@ function closeRepo() {
 }
 function openStats() {
   location.hash = '#/stats';
+}
+function openLanguages() {
+  location.hash = '#/languages';
+}
+function openAi() {
+  location.hash = '#/ai';
+}
+
+let aiDetect = null;
+let aiSessions = null;
+let aiUsage = null;
+let aiSearch = null;
+let aiBusy = false;
+let aiTab = 'detect'; // detect | sessions | tokens | search
+let aiSessionFilter = {
+  source: '',
+  project: '',
+};
+let aiUsageFilter = {
+  source: '',
+};
+let aiUsageGroup = 'model'; // model | period | surface | tool
+let aiUsagePeriod = 'month'; // day | week | month | year
+let aiUsagePeriodKey = null; // selected period key within aiUsagePeriod
+let aiSearchFilter = {
+  q: '',
+  source: '',
+};
+
+function formatBytes(n) {
+  if (n == null || Number.isNaN(Number(n))) return '—';
+  let value = Number(n);
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  for (const unit of units) {
+    if (value < 1024 || unit === 'TB') {
+      return unit === 'B' ? `${Math.round(value)} ${unit}` : `${value.toFixed(1)} ${unit}`;
+    }
+    value /= 1024;
+  }
+  return `${value.toFixed(1)} TB`;
+}
+
+function formatAiWhen(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString();
+}
+
+async function hydrateAiDetect() {
+  if (!paired) {
+    aiDetect = null;
+    return;
+  }
+  try {
+    aiDetect = await api('ai/detect');
+  } catch {
+    aiDetect = null;
+  }
+}
+
+async function runAiDetect() {
+  if (!paired || aiBusy) return;
+  aiBusy = true;
+  paintAi();
+  try {
+    aiDetect = await api('ai/detect', {});
+    toast('AI stores detected on this machine.');
+  } catch (error) {
+    toast(error.message || 'Detect failed.');
+  } finally {
+    aiBusy = false;
+    paintAi();
+  }
+}
+
+async function runAiSessions() {
+  if (!paired || aiBusy) return;
+  aiBusy = true;
+  paintAi();
+  try {
+    const body = { limit: 200 };
+    if (aiSessionFilter.source) body.sources = [aiSessionFilter.source];
+    if (aiSessionFilter.project.trim()) body.project = aiSessionFilter.project.trim();
+    aiSessions = await api('ai/sessions', body);
+    toast(`Loaded ${aiSessions.count} session${aiSessions.count === 1 ? '' : 's'}.`);
+  } catch (error) {
+    toast(error.message || 'Sessions failed.');
+  } finally {
+    aiBusy = false;
+    paintAi();
+  }
+}
+
+async function runAiUsage() {
+  if (!paired || aiBusy) return;
+  aiBusy = true;
+  paintAi();
+  try {
+    const body = {};
+    if (aiUsageFilter.source) body.sources = [aiUsageFilter.source];
+    aiUsage = await api('ai/usage', body);
+    const cost = aiUsage?.totals?.cost_usd;
+    toast(
+      cost == null
+        ? 'Usage aggregated.'
+        : `Estimated $${Number(cost).toFixed(2)} from local tokens.`,
+    );
+  } catch (error) {
+    toast(error.message || 'Usage failed.');
+  } finally {
+    aiBusy = false;
+    paintAi();
+  }
+}
+
+async function runAiSearch() {
+  if (!paired || aiBusy) return;
+  const q = (aiSearchFilter.q || '').trim();
+  if (!q) {
+    toast('Enter a search query.');
+    return;
+  }
+  aiBusy = true;
+  paintAi();
+  try {
+    const body = { q, limit: 50 };
+    if (aiSearchFilter.source) body.sources = [aiSearchFilter.source];
+    aiSearch = await api('ai/search', body);
+    toast(
+      `Found ${aiSearch.count} hit${aiSearch.count === 1 ? '' : 's'}${aiSearch.truncated ? ' (truncated)' : ''}.`,
+    );
+  } catch (error) {
+    toast(error.message || 'Search failed.');
+  } finally {
+    aiBusy = false;
+    paintAi();
+  }
+}
+
+function formatTokens(n) {
+  if (n == null || Number.isNaN(Number(n))) return '—';
+  const value = Number(n);
+  if (value >= 1_000_000) {
+    return `${Math.round(value / 1_000_000).toLocaleString('en-US')}M`;
+  }
+  if (value >= 1_000) {
+    const thousands = value / 1_000;
+    const text =
+      thousands >= 100
+        ? Math.round(thousands).toLocaleString('en-US')
+        : thousands.toLocaleString('en-US', {
+            maximumFractionDigits: 1,
+            minimumFractionDigits: 0,
+          });
+    return `${text}k`;
+  }
+  return Math.round(value).toLocaleString('en-US');
+}
+
+function formatUsd(n) {
+  if (n == null || Number.isNaN(Number(n))) return '—';
+  const value = Number(n);
+  if (value >= 100) {
+    return `$${Math.round(value).toLocaleString('en-US')}`;
+  }
+  if (value >= 1) {
+    return `$${value.toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+  return `$${value.toLocaleString('en-US', {
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4,
+  })}`;
+}
+
+function paintAiDetectPanel() {
+  const sources = aiDetect?.sources || [];
+  const summary = aiDetect?.summary || { found: 0, total: 0, sessions: 0 };
+  const detectedAt = aiDetect?.detectedAt
+    ? new Date(aiDetect.detectedAt).toLocaleString()
+    : null;
+  const byTool = {};
+  sources.forEach((item) => {
+    (byTool[item.tool] ||= []).push(item);
+  });
+  const toolOrder = [
+    'antigravity',
+    'claude-code',
+    'claude-desktop',
+    'codex',
+    'cursor',
+  ];
+  const tools = [
+    ...toolOrder.filter((t) => byTool[t]),
+    ...Object.keys(byTool).filter((t) => !toolOrder.includes(t)).sort(),
+  ];
+  let rows = '';
+  if (!paired) {
+    rows = `<tr><td colspan="6"><div class="callout">Connect the companion to detect AI discussion stores on this machine.</div></td></tr>`;
+  } else if (!sources.length) {
+    rows = `<tr><td colspan="6"><div class="callout">Click Detect to scan known Antigravity, Claude, Codex, and Cursor locations.</div></td></tr>`;
+  } else {
+    tools.forEach((tool) => {
+      rows += `<tr class="ai-tool-head"><td colspan="6">${esc(tool)}</td></tr>`;
+      byTool[tool].forEach((item) => {
+        const status = item.exists
+          ? `<span class="ai-found">FOUND</span>`
+          : `<span class="ai-missing">—</span>`;
+        const sessions =
+          item.session_estimate == null ? '—' : String(item.session_estimate);
+        rows += `<tr>
+          <td>${esc(item.surface)}</td>
+          <td>${status}</td>
+          <td class="ai-path">${esc(item.path)}</td>
+          <td>${item.exists ? esc(formatBytes(item.size_bytes)) : '—'}</td>
+          <td>${esc(sessions)}</td>
+          <td class="small">${esc(item.notes || '')}</td>
+        </tr>`;
+      });
+    });
+  }
+  return /* HTML */ `
+    <div class="machine-meta" style="margin: 0 0 18px">
+      ${
+        detectedAt
+          ? `${summary.found}/${summary.total} sources found · ~${summary.sessions} sessions · Detected ${esc(detectedAt)}`
+          : paired
+            ? 'Not detected yet on this machine.'
+            : 'Companion not connected.'
+      }
+    </div>
+    <table class="ai-table">
+      <thead>
+        <tr>
+          <th>Surface</th>
+          <th>Status</th>
+          <th>Path</th>
+          <th>Size</th>
+          <th>Sessions≈</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
+}
+
+function paintAiSessionsPanel() {
+  const list = aiSessions?.sessions || [];
+  const sourceOptions = [
+    ['', 'All wave-1 sources'],
+    ['antigravity.app', 'Antigravity app'],
+    ['antigravity.ide', 'Antigravity IDE'],
+    ['antigravity.cli', 'Antigravity CLI'],
+    ['claude.code', 'Claude Code'],
+    ['codex.home', 'Codex'],
+    ['cursor.cli', 'Cursor CLI'],
+    ['cursor.agent-transcripts', 'Cursor agent transcripts'],
+  ]
+    .map(
+      ([value, label]) =>
+        `<option value="${esc(value)}" ${aiSessionFilter.source === value ? 'selected' : ''}>${esc(label)}</option>`,
+    )
+    .join('');
+  let rows = '';
+  if (!paired) {
+    rows = `<tr><td colspan="6"><div class="callout">Connect the companion to list sessions.</div></td></tr>`;
+  } else if (!aiSessions) {
+    rows = `<tr><td colspan="6"><div class="callout">Click Load sessions to list Antigravity, Claude Code, Codex, and Cursor chats.</div></td></tr>`;
+  } else if (!list.length) {
+    rows = `<tr><td colspan="6"><div class="callout">No sessions matched these filters.</div></td></tr>`;
+  } else {
+    list.forEach((item) => {
+      rows += `<tr>
+        <td class="small">${esc(formatAiWhen(item.updated_at || item.started_at))}</td>
+        <td>${esc(item.tool)}<div class="small">${esc(item.surface)}</div></td>
+        <td>${esc(item.project || '—')}</td>
+        <td>${esc(item.preview || item.title || item.id)}</td>
+        <td>${esc(formatBytes(item.size_bytes))}</td>
+        <td class="ai-path small">${esc(item.path || '')}</td>
+      </tr>`;
+    });
+  }
+  const meta = aiSessions
+    ? `${aiSessions.count} shown${aiSessions.truncated ? ' (truncated)' : ''} · Listed ${esc(formatAiWhen(aiSessions.listedAt))}`
+    : 'Sessions not loaded yet.';
+  return /* HTML */ `
+    <div class="ai-filters">
+      <label class="small" for="aiSourceFilter">Source</label>
+      <select id="aiSourceFilter">${sourceOptions}</select>
+      <label class="small" for="aiProjectFilter">Project contains</label>
+      <input id="aiProjectFilter" type="text" value="${esc(aiSessionFilter.project)}" placeholder="eravnTrans" />
+      <button class="btn primary" id="aiSessionsBtn" ${!paired || aiBusy ? 'disabled' : ''}>
+        ${aiBusy && aiTab === 'sessions' ? 'Loading…' : '<span class="arrow">⟳</span> Load sessions'}
+      </button>
+    </div>
+    <div class="machine-meta" style="margin: 0 0 18px">${meta}</div>
+    <table class="ai-table">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>Tool</th>
+          <th>Project</th>
+          <th>Preview</th>
+          <th>Size</th>
+          <th>Path</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
+}
+
+function aiPeriodSeriesKey() {
+  if (aiUsagePeriod === 'week') return 'by_week';
+  if (aiUsagePeriod === 'month') return 'by_month';
+  if (aiUsagePeriod === 'year') return 'by_year';
+  return 'by_day';
+}
+
+function aiPeriodSeries() {
+  if (!aiUsage) return [];
+  return aiUsage[aiPeriodSeriesKey()] || aiUsage.by_date || [];
+}
+
+function ensureAiPeriodKey() {
+  const series = aiPeriodSeries();
+  if (!series.length) {
+    aiUsagePeriodKey = null;
+    return null;
+  }
+  if (!aiUsagePeriodKey || !series.some((row) => row.period === aiUsagePeriodKey)) {
+    aiUsagePeriodKey = series[0].period;
+  }
+  return aiUsagePeriodKey;
+}
+
+function formatAiPeriodLabel(period, grain = aiUsagePeriod) {
+  if (!period) return '—';
+  const value = String(period);
+  if (grain === 'day' || /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+  if (grain === 'week' || /^\d{4}-W\d{2}$/.test(value)) {
+    return value.replace(/^(\d{4})-W(\d{2})$/, (_, y, w) => `W${w}/${y.slice(-2)}`);
+  }
+  if (grain === 'month' || /^\d{4}-\d{2}$/.test(value)) {
+    const [y, m] = value.split('-');
+    return y && m ? `${m}/${y}` : value;
+  }
+  return value;
+}
+
+function usageTotalRow(totals) {
+  if (!totals) return '';
+  return `<tr class="ai-total-row">
+    <td>Total</td>
+    <td>${esc(formatTokens(totals.input_tokens))}</td>
+    <td>${esc(formatTokens(totals.cached_tokens))}</td>
+    <td>${esc(formatTokens(totals.output_tokens))}</td>
+    <td>${esc(formatUsd(totals.cost_usd))}</td>
+    <td class="small">${esc(Number(totals.events || 0).toLocaleString('en-US'))} events</td>
+  </tr>`;
+}
+
+function usageDataRows(list, labelFn) {
+  return list
+    .map((item) => {
+      const label = labelFn(item);
+      return `<tr>
+        <td>${esc(label)}</td>
+        <td>${esc(formatTokens(item.input_tokens))}</td>
+        <td>${esc(formatTokens(item.cached_tokens))}</td>
+        <td>${esc(formatTokens(item.output_tokens))}</td>
+        <td>${esc(formatUsd(item.cost_usd))}</td>
+        <td class="small">${esc(Number(item.events || 0).toLocaleString('en-US'))} events</td>
+      </tr>`;
+    })
+    .join('');
+}
+
+function paintAiTokensPanel() {
+  const sourceOptions = [
+    ['', 'All usage-capable sources'],
+    ['antigravity.app', 'Antigravity app'],
+    ['antigravity.ide', 'Antigravity IDE'],
+    ['antigravity.cli', 'Antigravity CLI'],
+    ['claude.code', 'Claude Code'],
+    ['codex.home', 'Codex'],
+  ]
+    .map(
+      ([value, label]) =>
+        `<option value="${esc(value)}" ${aiUsageFilter.source === value ? 'selected' : ''}>${esc(label)}</option>`,
+    )
+    .join('');
+  const groupOptions = [
+    ['model', 'By model'],
+    ['period', 'By period'],
+    ['surface', 'By surface'],
+    ['tool', 'By tool'],
+  ]
+    .map(
+      ([value, label]) =>
+        `<option value="${esc(value)}" ${aiUsageGroup === value ? 'selected' : ''}>${esc(label)}</option>`,
+    )
+    .join('');
+
+  const periodTabs = ['day', 'week', 'month', 'year']
+    .map(
+      (period) =>
+        `<button type="button" data-ai-usage-period="${period}" class="${aiUsagePeriod === period ? 'selected' : ''}">${period[0].toUpperCase()}${period.slice(1)}</button>`,
+    )
+    .join('');
+
+  const series = aiPeriodSeries();
+  const selectedKey = aiUsage ? ensureAiPeriodKey() : null;
+  const selectedIndex = series.findIndex((row) => row.period === selectedKey);
+  const selectedPeriod = selectedIndex >= 0 ? series[selectedIndex] : null;
+  const canPrev = selectedIndex >= 0 && selectedIndex < series.length - 1;
+  const canNext = selectedIndex > 0;
+
+  const scopeTotals =
+    aiUsageGroup === 'model' && selectedPeriod
+      ? selectedPeriod
+      : aiUsage?.totals;
+  const meta = aiUsage
+    ? `${formatTokens(scopeTotals.input_tokens)} in · ${formatTokens(scopeTotals.cached_tokens)} cached · ${formatTokens(scopeTotals.output_tokens)} out · ${formatUsd(scopeTotals.cost_usd)} · ${esc(formatAiWhen(aiUsage.aggregatedAt))}`
+    : 'Usage not loaded yet.';
+
+  let rows = '';
+  let totalRow = '';
+  let firstCol = 'Model';
+  if (!paired) {
+    rows = `<tr><td colspan="6"><div class="callout">Connect the companion to estimate token cost.</div></td></tr>`;
+  } else if (!aiUsage) {
+    rows = `<tr><td colspan="6"><div class="callout">Click Aggregate to sum Antigravity, Claude Code, and Codex usage from local stores.</div></td></tr>`;
+  } else if (aiUsageGroup === 'period') {
+    firstCol = aiUsagePeriod[0].toUpperCase() + aiUsagePeriod.slice(1);
+    if (!series.length) {
+      rows = `<tr><td colspan="6"><div class="callout">No dated usage events found.</div></td></tr>`;
+    } else {
+      rows = usageDataRows(series, (item) =>
+        formatAiPeriodLabel(item.period, aiUsagePeriod),
+      );
+      totalRow = usageTotalRow(aiUsage.totals);
+    }
+  } else if (aiUsageGroup === 'model') {
+    firstCol = 'Model';
+    const list = selectedPeriod?.by_model || [];
+    if (!selectedPeriod) {
+      rows = `<tr><td colspan="6"><div class="callout">No dated usage events found.</div></td></tr>`;
+    } else if (!list.length) {
+      rows = `<tr><td colspan="6"><div class="callout">No model usage in ${esc(formatAiPeriodLabel(selectedKey))}.</div></td></tr>`;
+    } else {
+      rows = usageDataRows(list, (item) => item.model || '—');
+      totalRow = usageTotalRow(selectedPeriod);
+    }
+  } else if (aiUsageGroup === 'surface') {
+    firstCol = 'Surface';
+    const list = aiUsage.by_surface || [];
+    if (!list.length) {
+      rows = `<tr><td colspan="6"><div class="callout">No usage events found for these sources.</div></td></tr>`;
+    } else {
+      rows = usageDataRows(list, (item) => item.label || '—');
+      totalRow = usageTotalRow(aiUsage.totals);
+    }
+  } else {
+    firstCol = 'Tool';
+    const list = aiUsage.by_tool || [];
+    if (!list.length) {
+      rows = `<tr><td colspan="6"><div class="callout">No usage events found for these sources.</div></td></tr>`;
+    } else {
+      rows = usageDataRows(list, (item) => item.tool || '—');
+      totalRow = usageTotalRow(aiUsage.totals);
+    }
+  }
+
+  const periodNav =
+    aiUsage && (aiUsageGroup === 'model' || aiUsageGroup === 'period')
+      ? `<div class="ai-period-nav">
+          <div class="period-tabs">${periodTabs}</div>
+          ${
+            aiUsageGroup === 'model'
+              ? `<div class="ai-period-shift">
+                  <button type="button" class="btn" id="aiUsagePrev" ${!canPrev || aiBusy ? 'disabled' : ''}>←</button>
+                  <strong>${esc(formatAiPeriodLabel(selectedKey))}</strong>
+                  <button type="button" class="btn" id="aiUsageNext" ${!canNext || aiBusy ? 'disabled' : ''}>→</button>
+                  <span class="small">${selectedIndex >= 0 ? `${selectedIndex + 1} / ${series.length}` : ''}</span>
+                </div>`
+              : `<p class="small" style="margin: 0">Each row is one ${esc(aiUsagePeriod)}.</p>`
+          }
+        </div>`
+      : aiUsage
+        ? `<div class="ai-period-nav"><p class="small" style="margin: 0">Surface and tool views are all-time. Switch Group to Model or Period for day/week/month/year.</p></div>`
+        : '';
+
+  const caveats = (aiUsage?.caveats || []).map((c) => `<li>${esc(c)}</li>`).join('');
+  const priceNotes = aiUsage?.prices?.notes
+    ? `<p class="small" style="margin-top: 12px">${esc(aiUsage.prices.notes)}</p>`
+    : '';
+
+  return /* HTML */ `
+    <div class="ai-filters">
+      <label class="small" for="aiUsageSourceFilter">Source</label>
+      <select id="aiUsageSourceFilter">${sourceOptions}</select>
+      <label class="small" for="aiUsageGroup">Group</label>
+      <select id="aiUsageGroup">${groupOptions}</select>
+      <button class="btn primary" id="aiUsageBtn" ${!paired || aiBusy ? 'disabled' : ''}>
+        ${aiBusy && aiTab === 'tokens' ? 'Aggregating…' : '<span class="arrow">⟳</span> Aggregate'}
+      </button>
+    </div>
+    ${periodNav}
+    <div class="machine-meta" style="margin: 0 0 18px">${meta}</div>
+    <table class="ai-table">
+      <thead>
+        <tr>
+          <th>${esc(firstCol)}</th>
+          <th>Input</th>
+          <th>Cached</th>
+          <th>Output</th>
+          <th>Est. $</th>
+          <th>Events</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+      ${totalRow ? `<tfoot>${totalRow}</tfoot>` : ''}
+    </table>
+    ${
+      caveats
+        ? `<div class="callout" style="margin-top: 18px"><strong>Caveats</strong><ul style="margin: 8px 0 0; padding-left: 18px">${caveats}</ul></div>`
+        : ''
+    }
+    ${priceNotes}
+  `;
+}
+
+function paintAiSearchPanel() {
+  const sourceOptions = [
+    ['', 'All wave-1 sources'],
+    ['antigravity.app', 'Antigravity app'],
+    ['antigravity.ide', 'Antigravity IDE'],
+    ['antigravity.cli', 'Antigravity CLI'],
+    ['claude.code', 'Claude Code'],
+    ['codex.home', 'Codex'],
+    ['cursor.cli', 'Cursor CLI'],
+    ['cursor.agent-transcripts', 'Cursor agent transcripts'],
+  ]
+    .map(
+      ([value, label]) =>
+        `<option value="${esc(value)}" ${aiSearchFilter.source === value ? 'selected' : ''}>${esc(label)}</option>`,
+    )
+    .join('');
+
+  const hits = aiSearch?.hits || [];
+  let rows = '';
+  if (!paired) {
+    rows = `<tr><td colspan="4"><div class="callout">Connect the companion to search local transcripts.</div></td></tr>`;
+  } else if (!aiSearch) {
+    rows = `<tr><td colspan="4"><div class="callout">Enter a query and click Search. Scans Antigravity, Claude, Codex, and Cursor stores on this machine.</div></td></tr>`;
+  } else if (!hits.length) {
+    rows = `<tr><td colspan="4"><div class="callout">No hits for “${esc(aiSearch.q)}”.</div></td></tr>`;
+  } else {
+    hits.forEach((hit) => {
+      rows += `<tr>
+        <td>${esc(hit.tool)}<div class="small">${esc(hit.surface)}</div></td>
+        <td class="small">${esc(hit.session_id || '—')}${hit.line ? `<div>L${esc(String(hit.line))}</div>` : ''}</td>
+        <td>${esc(hit.snippet || '')}</td>
+        <td class="ai-path small">${esc(hit.path || '')}</td>
+      </tr>`;
+    });
+  }
+
+  const meta = aiSearch
+    ? `${aiSearch.count} hit${aiSearch.count === 1 ? '' : 's'}${aiSearch.truncated ? ' (truncated)' : ''} · ${esc(aiSearch.engine || 'python')} · ${esc(formatAiWhen(aiSearch.searchedAt))}`
+    : 'Search not run yet.';
+
+  return /* HTML */ `
+    <div class="ai-filters">
+      <label class="small" for="aiSearchQuery">Query</label>
+      <input id="aiSearchQuery" type="text" value="${esc(aiSearchFilter.q)}" placeholder="login bug" style="min-width: 180px" />
+      <label class="small" for="aiSearchSourceFilter">Source</label>
+      <select id="aiSearchSourceFilter">${sourceOptions}</select>
+      <button class="btn primary" id="aiSearchBtn" ${!paired || aiBusy ? 'disabled' : ''}>
+        ${aiBusy && aiTab === 'search' ? 'Searching…' : '<span class="arrow">⟳</span> Search'}
+      </button>
+    </div>
+    <div class="machine-meta" style="margin: 0 0 18px">${meta}</div>
+    <table class="ai-table">
+      <thead>
+        <tr>
+          <th>Tool</th>
+          <th>Session</th>
+          <th>Snippet</th>
+          <th>Path</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+    <p class="small" style="margin-top: 12px">
+      Literal, case-insensitive match. Prefers ripgrep when installed; otherwise Python line scan.
+      Treat hits as sensitive local logs.
+    </p>
+  `;
+}
+
+function paintAi() {
+  const root = $('aiView');
+  if (!root) return;
+  const action =
+    aiTab === 'detect'
+      ? `<button class="btn primary" id="aiDetectBtn" ${!paired || aiBusy ? 'disabled' : ''}>
+          ${aiBusy && aiTab === 'detect' ? 'Detecting…' : '<span class="arrow">⟳</span> Detect'}
+        </button>`
+      : '';
+  const panel =
+    aiTab === 'detect'
+      ? paintAiDetectPanel()
+      : aiTab === 'sessions'
+        ? paintAiSessionsPanel()
+        : aiTab === 'tokens'
+          ? paintAiTokensPanel()
+          : paintAiSearchPanel();
+  root.innerHTML = /* HTML */ `
+    <div class="heading">
+      <div>
+        <h1>AI</h1>
+        <p>
+          Local discussion stores on this machine. Nothing is uploaded.
+        </p>
+      </div>
+      <div class="actions">${action}</div>
+    </div>
+    <div class="ai-tabs">
+      <button type="button" class="ai-tab ${aiTab === 'detect' ? 'active' : ''}" data-ai-tab="detect">Detect</button>
+      <button type="button" class="ai-tab ${aiTab === 'sessions' ? 'active' : ''}" data-ai-tab="sessions">Sessions</button>
+      <button type="button" class="ai-tab ${aiTab === 'tokens' ? 'active' : ''}" data-ai-tab="tokens">Tokens</button>
+      <button type="button" class="ai-tab ${aiTab === 'search' ? 'active' : ''}" data-ai-tab="search">Search</button>
+    </div>
+    ${panel}
+    <p class="small" style="margin-top: 16px">
+      Wave 1: Detect, Sessions, Tokens, Search.
+      Export comes next.
+    </p>
+  `;
+  document.querySelectorAll('[data-ai-tab]').forEach((button) => {
+    button.onclick = () => {
+      aiTab = button.dataset.aiTab;
+      paintAi();
+    };
+  });
+  if ($('aiDetectBtn')) $('aiDetectBtn').onclick = runAiDetect;
+  if ($('aiSessionsBtn')) $('aiSessionsBtn').onclick = runAiSessions;
+  if ($('aiUsageBtn')) $('aiUsageBtn').onclick = runAiUsage;
+  if ($('aiSearchBtn')) $('aiSearchBtn').onclick = runAiSearch;
+  if ($('aiSourceFilter')) {
+    $('aiSourceFilter').onchange = (event) => {
+      aiSessionFilter.source = event.target.value;
+    };
+  }
+  if ($('aiProjectFilter')) {
+    $('aiProjectFilter').oninput = (event) => {
+      aiSessionFilter.project = event.target.value;
+    };
+  }
+  if ($('aiUsageSourceFilter')) {
+    $('aiUsageSourceFilter').onchange = (event) => {
+      aiUsageFilter.source = event.target.value;
+    };
+  }
+  if ($('aiUsageGroup')) {
+    $('aiUsageGroup').onchange = (event) => {
+      aiUsageGroup = event.target.value;
+      paintAi();
+    };
+  }
+  document.querySelectorAll('[data-ai-usage-period]').forEach((button) => {
+    button.onclick = () => {
+      aiUsagePeriod = button.dataset.aiUsagePeriod;
+      aiUsagePeriodKey = null;
+      paintAi();
+    };
+  });
+  if ($('aiUsagePrev')) {
+    $('aiUsagePrev').onclick = () => {
+      const series = aiPeriodSeries();
+      const index = series.findIndex((row) => row.period === aiUsagePeriodKey);
+      if (index >= 0 && index < series.length - 1) {
+        aiUsagePeriodKey = series[index + 1].period;
+        paintAi();
+      }
+    };
+  }
+  if ($('aiUsageNext')) {
+    $('aiUsageNext').onclick = () => {
+      const series = aiPeriodSeries();
+      const index = series.findIndex((row) => row.period === aiUsagePeriodKey);
+      if (index > 0) {
+        aiUsagePeriodKey = series[index - 1].period;
+        paintAi();
+      }
+    };
+  }
+  if ($('aiSearchQuery')) {
+    $('aiSearchQuery').oninput = (event) => {
+      aiSearchFilter.q = event.target.value;
+    };
+    $('aiSearchQuery').onkeydown = (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        runAiSearch();
+      }
+    };
+  }
+  if ($('aiSearchSourceFilter')) {
+    $('aiSearchSourceFilter').onchange = (event) => {
+      aiSearchFilter.source = event.target.value;
+    };
+  }
 }
 function dateKey(date) {
   const y = date.getFullYear();
@@ -618,7 +1529,7 @@ function calendarTitle(cursor, mode = detailPeriod) {
   if (mode === 'month') return String(cursor.getFullYear());
   return `${cursor.getFullYear()} – ${cursor.getFullYear() + 11}`;
 }
-function calendarGrid(map, series) {
+function calendarGrid(map, series, linesMap = null) {
   const peak = Math.max(0, ...series.map((item) => item.commits || 0));
   if (detailPeriod === 'day') {
     const cursor = ensureCursor({ commitsByDate: map });
@@ -635,10 +1546,14 @@ function calendarGrid(map, series) {
     for (let day = 1; day <= days; day += 1) {
       const date = new Date(year, month, day);
       const commits = commitsOnDay(map, date);
+      const lines = linesMap ? formatLines(linesMap[dateKey(date)]) : '';
+      const tip = `${formatDate(dateKey(date) + 'T12:00:00')}: ${commits} commit${
+        commits === 1 ? '' : 's'
+      }${lines && lines !== '—' ? ` · ${lines}` : ''}`;
       cells.push(/* HTML */ `
         <div
           class="cal-cell ${commits ? 'active' : 'zero'} ${commits && commits === peak ? 'peak' : ''}"
-          title="${esc(formatDate(dateKey(date) + 'T12:00:00'))}: ${esc(commits)}"
+          title="${esc(tip)}"
         >
           <span class="d">${esc(day)}</span>
           <span class="n">${esc(commits)}</span>
@@ -660,10 +1575,14 @@ function calendarGrid(map, series) {
             detailPeriod === 'week' && item.start
               ? weekLabel(item.start)
               : periodLabel(item.period, item.start);
+          const lines = linesMap ? formatLines(linesForBucket(linesMap, item, detailPeriod)) : '';
+          const tip = `${label}: ${commits} commit${commits === 1 ? '' : 's'}${
+            lines && lines !== '—' ? ` · ${lines}` : ''
+          }`;
           return /* HTML */ `
             <div
               class="cal-cell ${commits ? 'active' : 'zero'} ${commits && commits === peak ? 'peak' : ''}"
-              title="${esc(label)}: ${esc(commits)}"
+              title="${esc(tip)}"
             >
               <span class="d">${esc(label)}</span>
               <span class="n">${esc(commits)}</span>
@@ -674,7 +1593,7 @@ function calendarGrid(map, series) {
     </div>
   `;
 }
-function timelineChart(map, series, mode, extraMeta = '') {
+function timelineChart(map, series, mode, extraMeta = '', linesMap = null) {
   if (!series.length) {
     return '<p class="note">No commit timeline in cache yet. Load or refresh portfolio stats.</p>';
   }
@@ -684,12 +1603,18 @@ function timelineChart(map, series, mode, extraMeta = '') {
   const active = counts.filter((n) => n > 0).length;
   const peak = Math.max(...counts);
   const mid = Math.round(max / 2);
+  const viewLines = linesMap
+    ? series.reduce((sum, item) => addLines(sum, linesForBucket(linesMap, item, mode)), emptyLines())
+    : null;
   const bars = series
     .map((item, index) => {
       const commits = item.commits || 0;
       const height = commits ? Math.max(8, Math.round((commits / max) * 170)) : 2;
       const label = axisLabel(item, index, series.length, mode);
-      const tip = `${periodLabel(item.period, item.start, mode)} · ${commits} commit${commits === 1 ? '' : 's'}`;
+      const lines = linesMap ? formatLines(linesForBucket(linesMap, item, mode)) : '';
+      const tip = `${periodLabel(item.period, item.start, mode)} · ${commits} commit${
+        commits === 1 ? '' : 's'
+      }${lines && lines !== '—' ? ` · ${lines}` : ''}`;
       return /* HTML */ `
         <div
           class="timeline-bar ${commits ? '' : 'zero'} ${commits === peak && peak ? 'peak' : ''}"
@@ -702,12 +1627,17 @@ function timelineChart(map, series, mode, extraMeta = '') {
       `;
     })
     .join('');
+  const linesMeta =
+    viewLines && (viewLines.additions || viewLines.deletions)
+      ? `<span>Lines <strong>${esc(formatLines(viewLines))}</strong></span>`
+      : '';
   return /* HTML */ `
     <div class="timeline-panel">
       <div class="timeline-meta">
         <span>In view <strong>${esc(total)}</strong></span>
         <span>Active <strong>${esc(active)}/${esc(series.length)}</strong></span>
         <span>Peak <strong>${esc(peak)}</strong></span>
+        ${linesMeta}
         ${extraMeta}
       </div>
       <div class="timeline-chart" role="img" aria-label="Commit timeline">
@@ -728,14 +1658,15 @@ function timelineViz(stats) {
   }
   const cursor = ensureCursor(stats);
   const series = seriesForView(map, detailPeriod, cursor);
+  const linesMap = stats?.linesByDate || null;
   return /* HTML */ `
-    ${timelineChart(map, series, detailPeriod)}
+    ${timelineChart(map, series, detailPeriod, '', linesMap)}
     <div class="cal-nav">
       <button class="btn" id="calPrev">← Prev</button>
       <h3>${esc(calendarTitle(cursor, detailPeriod))}</h3>
       <button class="btn" id="calNext">Next →</button>
     </div>
-    ${calendarGrid(map, series)}
+    ${calendarGrid(map, series, linesMap)}
   `;
 }
 function mergedCommitsByDate() {
@@ -953,6 +1884,86 @@ function paintStats() {
   `;
   bindStatsPage();
 }
+function paintLanguages() {
+  const pulse = portfolioNumbers();
+  const hasCache = pulse.cached > 0;
+  $('languagesView').innerHTML = /* HTML */ `
+    <div class="heading">
+      <div>
+        <h1>Languages</h1>
+        <p>
+          ${
+            locMetric === 'complexity'
+              ? 'Complexity by language across tracked repositories (scc).'
+              : 'Code lines by language across tracked repositories (scc).'
+          }
+        </p>
+      </div>
+      <div class="actions">
+        <button
+          class="btn primary"
+          id="languagesScan"
+          ${!paired || busy || statsBusy || !paths.length ? 'disabled' : ''}
+        >
+          ${busy || statsBusy ? 'Scanning…' : '<span class="arrow">⟳</span> Scan'}
+        </button>
+      </div>
+    </div>
+    ${
+      !paired
+        ? '<div class="callout">Connect the companion to load language counts.</div>'
+        : !paths.length
+          ? '<div class="callout">Track repositories first, then Scan.</div>'
+          : !hasCache
+            ? '<div class="callout">No cached stats yet. Click Scan to compute LOC with scc.</div>'
+            : ''
+    }
+    <section class="stats-section">
+      <div class="section-head">
+        <h2>${locMetric === 'complexity' ? 'Complexity' : 'Code lines'}</h2>
+        <div class="period-tabs">
+          <button data-loc-metric="code" class="${locMetric === 'code' ? 'selected' : ''}">Code</button>
+          <button data-loc-metric="complexity" class="${locMetric === 'complexity' ? 'selected' : ''}">
+            Complexity
+          </button>
+        </div>
+      </div>
+      ${locMatrixHtml()}
+    </section>
+  `;
+  bindLanguagesPage();
+}
+function bindLanguagesPage() {
+  if ($('languagesScan')) $('languagesScan').onclick = runScan;
+  document.querySelectorAll('[data-loc-metric]').forEach((button) => {
+    button.onclick = () => {
+      locMetric = button.dataset.locMetric;
+      locSortKey = 'total';
+      locSortDir = -1;
+      paintLanguages();
+    };
+  });
+  document.querySelectorAll('[data-loc-sort]').forEach((th) => {
+    th.onclick = () => {
+      const key = th.dataset.locSort;
+      if (locSortKey === key) locSortDir = -locSortDir;
+      else {
+        locSortKey = key;
+        locSortDir = key === 'name' ? 1 : -1;
+      }
+      paintLanguages();
+    };
+  });
+  document.querySelectorAll('#languagesView [data-path]').forEach((node) => {
+    node.onclick = () => openRepo(node.dataset.path);
+    node.onkeydown = (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openRepo(node.dataset.path);
+      }
+    };
+  });
+}
 function bindStatsPage() {
   if ($('statsScan')) $('statsScan').onclick = runScan;
   document.querySelectorAll('[data-stats-period]').forEach((button) => {
@@ -1053,10 +2064,14 @@ function paintDetail() {
                   ['Age', s.ageLabel || '—'],
                   ['First commit', formatDate(s.firstCommitAt)],
                   ['Lifespan', s.lifespanDays != null ? s.lifespanDays + ' days' : '—'],
-                  ['7d', s.commits7d ?? '—'],
-                  ['30d', s.commits30d ?? '—'],
-                  ['90d', s.commits90d ?? '—'],
+                  ['7d commits', s.commits7d ?? '—'],
+                  ['30d commits', s.commits30d ?? '—'],
+                  ['90d commits', s.commits90d ?? '—'],
                   ['Tracked size', formatBytes(s.workingTreeBytes)],
+                  ['Diff churn + / − / net', formatLines(s.linesTotal)],
+                  ['Diff churn 7d', formatLines(s.lines7d)],
+                  ['Diff churn 30d', formatLines(s.lines30d)],
+                  ['Diff churn 90d', formatLines(s.lines90d)],
                 ])}
               </div>
               <p class="note">
@@ -1163,7 +2178,10 @@ async function ensureDetailStats() {
     cached &&
     cached.commitsByDate &&
     typeof cached.commitsByDate === 'object' &&
-    cached.activitySummary
+    cached.activitySummary &&
+    cached.linesByDate &&
+    typeof cached.linesByDate === 'object' &&
+    cached.linesTotal
   ) {
     return;
   }
@@ -1222,7 +2240,7 @@ function connect() {
       await pairWithToken(candidate);
       render();
       close();
-      await hydrateStats();
+      await Promise.all([hydrateStats(), hydrateAiDetect()]);
       manage();
     } catch (e) {
       $('pairError').textContent =
@@ -1250,7 +2268,7 @@ async function bootstrapPairing() {
     try {
       await pairWithToken(fromQuery);
       render();
-      await hydrateStats();
+      await Promise.all([hydrateStats(), hydrateAiDetect()]);
       return;
     } catch {
       writeStoredToken('');
@@ -1261,7 +2279,7 @@ async function bootstrapPairing() {
   try {
     await pairWithToken(stored);
     render();
-    await hydrateStats();
+    await Promise.all([hydrateStats(), hydrateAiDetect()]);
   } catch {
     writeStoredToken('');
     token = '';
@@ -1476,6 +2494,8 @@ $('overviewNav').onclick = () => {
   else render();
 };
 $('statsNav').onclick = () => openStats();
+$('languagesNav').onclick = () => openLanguages();
+$('aiNav').onclick = () => openAi();
 window.addEventListener('hashchange', () => {
   syncRoute();
 });

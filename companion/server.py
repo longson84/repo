@@ -17,9 +17,20 @@ from pathlib import Path
 import secrets
 import socket
 import subprocess
+import sys
 import threading
 from urllib.parse import urlparse
 import webbrowser
+
+_COMPANION_DIR = Path(__file__).resolve().parent
+if str(_COMPANION_DIR) not in sys.path:
+    sys.path.insert(0, str(_COMPANION_DIR))
+from ai.catalog import resolve_sources  # noqa: E402
+from ai.detect import detect_all, load_detect_cache, save_detect_cache  # noqa: E402
+from ai.sessions import list_sessions  # noqa: E402
+from ai.usage import aggregate_usage  # noqa: E402
+from ai.search import search_transcripts  # noqa: E402
+from ai import prices as ai_prices  # noqa: E402
 
 ORIGINS = {
     "https://repo.theana.online",
@@ -91,8 +102,252 @@ def git_soft(path, *args, timeout=35):
         return None
 
 
+# Excluded from LOC: docs/config/markup/template/shell/style noise.
+SCC_EXCLUDE_EXTS = (
+    "json,json5,jsonc,jsonl,jsonnet,libsonnet,"
+    "md,markdown,"
+    "txt,text,"
+    "sh,bash,bashrc,bash_login,bash_logout,bash_profile,csh,ksh,zsh,fish,nu,"
+    "css,scss,sass,"
+    "yaml,yml,"
+    "csv,"
+    "xml,xsd,dtd,fxml,mxml,"
+    "ftl,"
+    "svg,"
+    "license,licence,copying,copying3,unlicense,unlicence,"
+    "license-apache,licence-apache,license-mit,licence-mit,copyright,"
+    "rtf,"
+    "dot,gv,"
+    "dockerfile,"
+    "ini,"
+    "toml,"
+    "mako,mao,"
+    "srt,"
+    "rst,"
+    "xslt,xsl,"
+    "smk,snakefile"
+    # Note: Qt Translation Source / TypeScript both use .ts — exclude Qt by language name only.
+    # Autoconf (.in) and Systemd unit suffixes are language-name-only (too easy to over-exclude).
+)
+SCC_EXCLUDE_LANGUAGES = {
+    "JSON",
+    "JSON5",
+    "JSONC",
+    "JSONL",
+    "Jsonnet",
+    "Markdown",
+    "Plain Text",
+    "Shell",
+    "BASH",
+    "C Shell",
+    "Korn Shell",
+    "Nushell",
+    "CSS",
+    "Sass",
+    "YAML",
+    "CloudFormation (JSON)",
+    "CloudFormation (YAML)",
+    "Bitbucket Pipeline",
+    "CSV",
+    "XML",
+    "XML Schema",
+    "Document Type Definition",
+    "FXML",
+    "Macromedia eXtensible Markup Language",
+    "Freemarker Template",
+    "SVG",
+    "License",
+    "Rich Text Format",
+    "DOT",
+    "Qt Translation Source",
+    "Dockerfile",
+    "Docker ignore",
+    "INI",
+    "TOML",
+    "Mako",
+    "SRecode Template",
+    "ReStructuredText",
+    "Extensible Stylesheet Language Transformations",
+    "Systemd",
+    "Autoconf",
+    "Snakemake",
+    "TypeScript Typings",
+}
+
+
+def parse_scc_json(payload):
+    """Aggregate scc --format json language rows into LOC totals."""
+    rows = json.loads(payload) if isinstance(payload, str) else payload
+    if not isinstance(rows, list):
+        raise ValueError("scc JSON must be a list")
+    code = comment = blank = lines = files = complexity = 0
+    by_language = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("Name") or "Unknown"
+        if name in SCC_EXCLUDE_LANGUAGES:
+            continue
+        lang_code = int(row.get("Code") or 0)
+        lang_comment = int(row.get("Comment") or 0)
+        lang_blank = int(row.get("Blank") or 0)
+        lang_lines = int(row.get("Lines") or (lang_code + lang_comment + lang_blank))
+        lang_files = int(row.get("Count") or 0)
+        lang_complexity = int(row.get("Complexity") or 0)
+        code += lang_code
+        comment += lang_comment
+        blank += lang_blank
+        lines += lang_lines
+        files += lang_files
+        complexity += lang_complexity
+        by_language.append(
+            {
+                "name": name,
+                "code": lang_code,
+                "comment": lang_comment,
+                "blank": lang_blank,
+                "lines": lang_lines,
+                "files": lang_files,
+                "complexity": lang_complexity,
+            }
+        )
+    by_language.sort(key=lambda item: item["code"], reverse=True)
+    return {
+        "locCode": code,
+        "locComment": comment,
+        "locBlank": blank,
+        "locLines": lines,
+        "locFiles": files,
+        "locComplexity": complexity,
+        "locByLanguage": by_language[:20],
+    }
+
+def collect_scc_loc(path, timeout=120):
+    """Current-tree LOC via scc (code / comment / blank), excluding docs/config noise."""
+    try:
+        result = subprocess.run(
+            [
+                "scc",
+                "--format",
+                "json",
+                "--exclude-ext",
+                SCC_EXCLUDE_EXTS,
+                str(path),
+            ],
+            capture_output=True,
+            timeout=timeout,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except FileNotFoundError as error:
+        raise ValueError("scc is not installed or not on PATH.") from error
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("scc timed out.") from error
+    if result.returncode:
+        message = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(message or "scc failed.")
+    return parse_scc_json(result.stdout.decode("utf-8", errors="replace"))
+
+
 def _series(counter, keys):
     return [{"period": key, "commits": counter.get(key, 0)} for key in keys]
+
+
+def _parse_commit_stamp(value):
+    if not value:
+        return None
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.astimezone(timezone.utc)
+
+
+def empty_line_totals():
+    return {"additions": 0, "deletions": 0, "net": 0}
+
+
+def add_line_totals(bucket, additions, deletions):
+    bucket["additions"] += additions
+    bucket["deletions"] += deletions
+    bucket["net"] += additions - deletions
+
+
+def parse_numstat_log(text):
+    """Parse `git log --numstat --pretty=format:%cI` into per-commit line churn."""
+    commits = []
+    current_iso = None
+    additions = 0
+    deletions = 0
+
+    def flush():
+        nonlocal current_iso, additions, deletions
+        if current_iso is None:
+            return
+        commits.append(
+            {
+                "iso": current_iso,
+                "additions": additions,
+                "deletions": deletions,
+                "net": additions - deletions,
+            }
+        )
+        current_iso = None
+        additions = 0
+        deletions = 0
+
+    for raw in (text or "").splitlines():
+        line = raw.strip("\r")
+        if not line:
+            continue
+        if "\t" in line:
+            left, mid, _right = line.split("\t", 2)
+            if left.isdigit() and mid.isdigit():
+                additions += int(left)
+                deletions += int(mid)
+            continue
+        # Commit header (ISO date). Flush the previous commit first.
+        if current_iso is not None:
+            flush()
+        current_iso = line
+        additions = 0
+        deletions = 0
+    flush()
+    return commits
+
+
+def line_churn_summary(commits, now=None):
+    """Aggregate per-commit line churn into totals, windows, and by-date map."""
+    now = now or datetime.now(timezone.utc)
+    total = empty_line_totals()
+    windows = {
+        7: empty_line_totals(),
+        30: empty_line_totals(),
+        90: empty_line_totals(),
+    }
+    by_date = {}
+    for item in commits:
+        stamp = _parse_commit_stamp(item.get("iso"))
+        if stamp is None:
+            continue
+        additions = int(item.get("additions") or 0)
+        deletions = int(item.get("deletions") or 0)
+        add_line_totals(total, additions, deletions)
+        age = now - stamp
+        for days, bucket in windows.items():
+            if age <= timedelta(days=days):
+                add_line_totals(bucket, additions, deletions)
+        day_key = stamp.date().isoformat()
+        day_bucket = by_date.setdefault(day_key, empty_line_totals())
+        add_line_totals(day_bucket, additions, deletions)
+    return {
+        "linesTotal": total,
+        "lines7d": windows[7],
+        "lines30d": windows[30],
+        "lines90d": windows[90],
+        "linesByDate": by_date,
+    }
 
 
 def commit_series(iso_dates, now=None):
@@ -104,15 +359,10 @@ def commit_series(iso_dates, now=None):
     by_month = Counter()
     by_year = Counter()
     for value in iso_dates:
-        if not value:
+        stamp = _parse_commit_stamp(value)
+        if stamp is None:
             continue
-        try:
-            stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if stamp.tzinfo is None:
-            stamp = stamp.replace(tzinfo=timezone.utc)
-        day = stamp.astimezone(timezone.utc).date()
+        day = stamp.date()
         by_day[day.isoformat()] += 1
         year, week, _ = day.isocalendar()
         by_week[f"{year}-W{week:02d}"] += 1
@@ -449,6 +699,18 @@ def collect_stats(path):
         commitsByYear=None,
         commitsByDate=None,
         activitySummary=None,
+        linesTotal=None,
+        lines7d=None,
+        lines30d=None,
+        lines90d=None,
+        linesByDate=None,
+        locCode=None,
+        locComment=None,
+        locBlank=None,
+        locLines=None,
+        locFiles=None,
+        locComplexity=None,
+        locByLanguage=None,
         ageDays=None,
         ageLabel=None,
         lifespanDays=None,
@@ -513,19 +775,24 @@ def collect_stats(path):
     else:
         note("commits 90d")
 
-    log_dates = git_soft(path, "log", "--format=%cI", "HEAD", timeout=120)
-    if log_dates is not None:
-        series = commit_series(log_dates.splitlines(), now=now)
+    numstat_log = git_soft(
+        path, "log", "--numstat", "--pretty=format:%cI", "HEAD", timeout=180
+    )
+    if numstat_log is not None:
+        commits = parse_numstat_log(numstat_log)
+        series = commit_series([item["iso"] for item in commits], now=now)
         result.update(series)
         week_map = {item["period"]: item["commits"] for item in series["commitsByWeek"]}
         result["weeklyCommits"] = [
             week_map.get(item["period"], 0) for item in series["commitsByWeek"][-12:]
         ]
         result["activitySummary"] = activity_summary(series)
+        result.update(line_churn_summary(commits, now=now))
     else:
         note("commit timeline")
         note("weekly commits")
         note("activity summary")
+        note("line churn")
 
     age = age_stats(result.get("firstCommitAt"), result.get("lastCommitAt"), now=now)
     result.update(age)
@@ -629,6 +896,11 @@ def collect_stats(path):
     except (OSError, ValueError, TypeError):
         note("large blobs")
 
+    try:
+        result.update(collect_scc_loc(path))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        note("scc loc")
+
     if errors:
         result["error"] = "Partial stats: could not read " + ", ".join(errors) + "."
     return result
@@ -644,6 +916,24 @@ def stats_fresh(cached, path):
         return False
     if not isinstance(cached.get("activitySummary"), dict):
         return False
+    if not isinstance(cached.get("linesByDate"), dict):
+        return False
+    for key in ("linesTotal", "lines7d", "lines30d", "lines90d"):
+        value = cached.get(key)
+        if not isinstance(value, dict) or "additions" not in value or "deletions" not in value:
+            return False
+    if cached.get("locCode") is None:
+        return False
+    if cached.get("locComplexity") is None:
+        return False
+    langs = cached.get("locByLanguage")
+    if not isinstance(langs, list):
+        return False
+    for item in langs:
+        if not isinstance(item, dict) or "complexity" not in item:
+            return False
+        if item.get("name") in SCC_EXCLUDE_LANGUAGES:
+            return False
     if not isinstance(cached.get("hotspotFiles"), list):
         return False
     if not isinstance(cached.get("largeBlobs"), list):
@@ -671,15 +961,100 @@ class State:
         self.config = Path(config)
         self.stats_path = self.config.parent / "stats.json"
         self.scan_path = self.config.parent / "scan.json"
+        self.ai_detect_path = self.config.parent / "ai" / "detect.json"
+        self.ai_prices_path = self.config.parent / "ai" / "prices.json"
         self.lock = threading.Lock()
         self.paths = []
         self.stats_cache = {"version": 1, "repos": {}}
         self.scan_cache = {"version": 1, "scannedAt": None, "repos": {}}
+        self.ai_detect_cache = None
         if self.config.exists():
             raw = json.loads(self.config.read_text())
             self.paths = [str(self.checked(p)) for p in raw.get("paths", [])]
         self.load_stats_cache()
         self.load_scan_cache()
+        self.load_ai_detect_cache()
+        ai_prices.ensure_prices(self.ai_prices_path)
+
+    def load_ai_detect_cache(self):
+        self.ai_detect_cache = load_detect_cache(self.ai_detect_path)
+
+    def run_ai_detect(self):
+        payload = detect_all(resolve_sources())
+        save_detect_cache(self.ai_detect_path, payload)
+        self.ai_detect_cache = payload
+        return payload
+
+    def list_ai_sessions(self, data):
+        sources = data.get("sources")
+        if sources is not None and not isinstance(sources, list):
+            raise ValueError("sources must be a list of source ids.")
+        if isinstance(sources, list):
+            for item in sources:
+                if not isinstance(item, str):
+                    raise ValueError("sources must be strings.")
+        project = data.get("project")
+        if project is not None and not isinstance(project, str):
+            raise ValueError("project must be a string.")
+        limit = data.get("limit", 100)
+        if not isinstance(limit, int):
+            raise ValueError("limit must be an integer.")
+        return list_sessions(sources=sources, project=project, limit=limit)
+
+    def list_ai_usage(self, data):
+        sources = data.get("sources")
+        if sources is not None and not isinstance(sources, list):
+            raise ValueError("sources must be a list of source ids.")
+        if isinstance(sources, list):
+            for item in sources:
+                if not isinstance(item, str):
+                    raise ValueError("sources must be strings.")
+        session_ids = data.get("session_ids")
+        if session_ids is not None and not isinstance(session_ids, list):
+            raise ValueError("session_ids must be a list of strings.")
+        if isinstance(session_ids, list):
+            for item in session_ids:
+                if not isinstance(item, str):
+                    raise ValueError("session_ids must be strings.")
+        return aggregate_usage(
+            sources=sources,
+            session_ids=session_ids,
+            prices_path=self.ai_prices_path,
+        )
+
+    def get_ai_prices(self):
+        data = ai_prices.ensure_prices(self.ai_prices_path)
+        return {
+            "version": 1,
+            "path": str(self.ai_prices_path),
+            **data,
+        }
+
+    def update_ai_prices(self, data):
+        if not isinstance(data, dict):
+            raise ValueError("prices body must be an object.")
+        updated = ai_prices.update_prices(self.ai_prices_path, data)
+        return {
+            "version": 1,
+            "path": str(self.ai_prices_path),
+            **updated,
+        }
+
+    def run_ai_search(self, data):
+        q = data.get("q")
+        if not isinstance(q, str):
+            raise ValueError("q must be a string.")
+        sources = data.get("sources")
+        if sources is not None and not isinstance(sources, list):
+            raise ValueError("sources must be a list of source ids.")
+        if isinstance(sources, list):
+            for item in sources:
+                if not isinstance(item, str):
+                    raise ValueError("sources must be strings.")
+        limit = data.get("limit", 50)
+        if not isinstance(limit, int):
+            raise ValueError("limit must be an integer.")
+        return search_transcripts(q, sources=sources, limit=limit)
 
     def checked(self, value):
         path = Path(value).expanduser().resolve(strict=True)
@@ -976,6 +1351,29 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 else:
                     raise ValueError("Provide path or all=true for stats.")
+            elif self.command == "GET" and self.path == "/api/ai/detect":
+                cached = state.ai_detect_cache
+                if not cached:
+                    response = {
+                        "version": 1,
+                        "detectedAt": None,
+                        "sources": [],
+                        "summary": {"total": 0, "found": 0, "sessions": 0},
+                    }
+                else:
+                    response = cached
+            elif self.command == "POST" and self.path == "/api/ai/detect":
+                response = state.run_ai_detect()
+            elif self.command == "POST" and self.path == "/api/ai/sessions":
+                response = state.list_ai_sessions(data)
+            elif self.command == "POST" and self.path == "/api/ai/usage":
+                response = state.list_ai_usage(data)
+            elif self.command == "GET" and self.path == "/api/ai/prices":
+                response = state.get_ai_prices()
+            elif self.command == "POST" and self.path == "/api/ai/prices":
+                response = state.update_ai_prices(data)
+            elif self.command == "POST" and self.path == "/api/ai/search":
+                response = state.run_ai_search(data)
             else:
                 return self.send_json(404, {"error": "Unknown endpoint."})
             self.send_json(200, response)

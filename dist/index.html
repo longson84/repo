@@ -131,6 +131,109 @@
         margin-top: auto;
         line-height: 1.8;
       }
+      .ai-table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .ai-table th,
+      .ai-table td {
+        text-align: left;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+      }
+      .ai-table th {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: var(--muted);
+        background: #f3f5ee;
+      }
+      .ai-table tr:last-child td {
+        border-bottom: 0;
+      }
+      .ai-table .ai-total-row td {
+        border-top: 1px solid var(--line);
+        border-bottom: 0;
+        background: #f3f5ee;
+        font-weight: 650;
+      }
+      .ai-found {
+        color: var(--green);
+        font-weight: 650;
+      }
+      .ai-missing {
+        color: var(--muted);
+      }
+      .ai-path {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        word-break: break-all;
+      }
+      .ai-tool-head td {
+        background: #f7f8f3;
+        font-weight: 650;
+        padding-top: 16px;
+      }
+      .ai-tabs {
+        display: flex;
+        gap: 8px;
+        margin: 0 0 22px;
+      }
+      .ai-tab {
+        border: 1px solid #dce1d5;
+        background: white;
+        border-radius: 8px;
+        padding: 8px 14px;
+        color: #656e5f;
+        font-weight: 600;
+        font-size: 12px;
+      }
+      .ai-tab.active {
+        background: #e0e7d6;
+        border-color: #d0d9c2;
+        color: #304329;
+      }
+      .ai-filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: end;
+        margin: 0 0 18px;
+      }
+      .ai-filters label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .ai-filters select,
+      .ai-filters input {
+        border: 1px solid #dce1d5;
+        border-radius: 8px;
+        padding: 10px 12px;
+        min-width: 180px;
+        background: white;
+      }
+      .ai-period-nav {
+        margin: 0 0 16px;
+      }
+      .ai-period-nav .period-tabs {
+        margin: 0 0 12px;
+      }
+      .ai-period-shift {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+      }
+      .ai-period-shift .btn {
+        min-width: 42px;
+        padding: 8px 12px;
+      }
       .sidefoot strong {
         display: block;
         font-size: 12px;
@@ -691,6 +794,36 @@
         color: #a0a894;
         font-weight: 500;
       }
+      .loc-matrix {
+        max-height: none;
+        overflow-x: auto;
+        overflow-y: visible;
+      }
+      .loc-matrix table {
+        min-width: max-content;
+      }
+      .loc-matrix th,
+      .loc-matrix td {
+        text-align: right;
+      }
+      .loc-matrix th:first-child,
+      .loc-matrix td:first-child,
+      .loc-matrix th.sticky-col,
+      .loc-matrix td.sticky-col {
+        text-align: left;
+        position: sticky;
+        left: 0;
+        background: #fff;
+        z-index: 1;
+        min-width: 140px;
+      }
+      .loc-matrix thead th.sticky-col {
+        z-index: 2;
+        background: #fbfcf8;
+      }
+      .loc-matrix tr.board-row:hover td.sticky-col {
+        background: #f6f9ef;
+      }
       .contrib-list,
       .lang-list {
         list-style: none;
@@ -1222,6 +1355,14 @@
             <span>▤</span>
             Stats
           </button>
+          <button id="languagesNav">
+            <span>◈</span>
+            Languages
+          </button>
+          <button id="aiNav">
+            <span>◎</span>
+            AI
+          </button>
           <button id="machinesNav">
             <span>▱</span>
             Machines
@@ -1455,6 +1596,8 @@
         </div>
         <div id="detailView" class="detail-page" hidden></div>
         <div id="statsView" class="stats-page" hidden></div>
+        <div id="languagesView" class="stats-page" hidden></div>
+        <div id="aiView" class="stats-page" hidden></div>
       </main>
     </div>
     <div class="overlay" id="overlay">

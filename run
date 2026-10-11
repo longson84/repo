@@ -4,17 +4,90 @@
 Usage:
   python3 run repo
   python3 run repo ~/Projects
+
+If the companion or UI port is already in use, stops that process and starts fresh.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
+import time
 
 HERE = Path(__file__).resolve().parent
 COMPANION = HERE / "companion" / "server.py"
 DEFAULT_ROOT = Path.home() / "Projects"
+DEFAULT_PORT = 48731
+DEFAULT_UI_PORT = 8766
+
+
+def arg_value(argv: list[str], flag: str, default: int) -> int:
+    if flag in argv:
+        index = argv.index(flag)
+        if index + 1 < len(argv):
+            try:
+                return int(argv[index + 1])
+            except ValueError:
+                pass
+    return default
+
+
+def pids_listening(port: int) -> list[int]:
+    try:
+        output = subprocess.check_output(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return []
+    pids = []
+    for token in output.split():
+        if token.isdigit():
+            pid = int(token)
+            if pid != os.getpid() and pid not in pids:
+                pids.append(pid)
+    return pids
+
+
+def free_ports(*ports: int) -> None:
+    victims: list[tuple[int, int]] = []
+    seen: set[int] = set()
+    for port in ports:
+        for pid in pids_listening(port):
+            if pid in seen:
+                continue
+            seen.add(pid)
+            victims.append((pid, port))
+    if not victims:
+        return
+    for pid, port in victims:
+        print(f"Stopping pid {pid} (port {port})…", flush=True)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    time.sleep(0.45)
+    for pid, port in victims:
+        if pid in pids_listening(port) or _still_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    time.sleep(0.2)
+
+
+def _still_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
 
 
 def main(argv: list[str]) -> int:
@@ -26,10 +99,15 @@ def main(argv: list[str]) -> int:
         print(f"Unknown command: {command}", file=sys.stderr)
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    root = argv[1] if len(argv) > 1 else str(DEFAULT_ROOT)
+    rest = argv[1:]
+    root = rest[0] if rest and not rest[0].startswith("-") else str(DEFAULT_ROOT)
+    companion_args = rest[1:] if rest and not rest[0].startswith("-") else rest
+    port = arg_value(companion_args, "--port", DEFAULT_PORT)
+    ui_port = arg_value(companion_args, "--ui-port", DEFAULT_UI_PORT)
+    free_ports(port, ui_port)
     os.execv(
         sys.executable,
-        [sys.executable, str(COMPANION), "--root", root, "--ui", *argv[2:]],
+        [sys.executable, str(COMPANION), "--root", root, "--ui", *companion_args],
     )
 
 

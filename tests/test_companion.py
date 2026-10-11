@@ -155,12 +155,129 @@ class CompanionTests(unittest.TestCase):
         self.assertIsNotNone(result["activitySummary"])
         self.assertGreaterEqual(result["activitySummary"]["peakDayCommits"], 1)
         self.assertIsNotNone(result["ageLabel"])
+        self.assertIsInstance(result["linesTotal"], dict)
+        self.assertGreaterEqual(result["linesTotal"]["additions"], 1)
+        self.assertEqual(
+            result["linesTotal"]["net"],
+            result["linesTotal"]["additions"] - result["linesTotal"]["deletions"],
+        )
+        self.assertIsInstance(result["linesByDate"], dict)
+        self.assertGreater(sum(item["additions"] for item in result["linesByDate"].values()), 0)
+        if result.get("locCode") is not None:
+            self.assertGreaterEqual(result["locCode"], 1)
+            self.assertIsInstance(result["locByLanguage"], list)
         self.assertIsInstance(result["hotspotFiles"], list)
         self.assertTrue(any(item["path"].endswith("app.py") for item in result["hotspotFiles"]))
         self.assertIsInstance(result["largeBlobs"], list)
         self.assertTrue(any(item.get("source") == "HEAD" for item in result["largeBlobs"]))
         self.assertIsNone(result["error"])
         self.assertNotIn("fetch", calls)
+
+    def test_parse_numstat_log_sums_commits_and_skips_binary(self):
+        api = self.api()
+        text = "\n".join(
+            [
+                "2026-10-01T10:00:00+00:00",
+                "10\t2\tapp.py",
+                "-\t-\tphoto.png",
+                "",
+                "2026-10-02T11:00:00+00:00",
+                "3\t1\treadme.md",
+            ]
+        )
+        commits = api.parse_numstat_log(text)
+        self.assertEqual(len(commits), 2)
+        self.assertEqual(commits[0]["additions"], 10)
+        self.assertEqual(commits[0]["deletions"], 2)
+        self.assertEqual(commits[0]["net"], 8)
+        self.assertEqual(commits[1]["additions"], 3)
+        summary = api.line_churn_summary(
+            commits, now=api.datetime(2026, 10, 10, tzinfo=api.timezone.utc)
+        )
+        self.assertEqual(summary["linesTotal"]["additions"], 13)
+        self.assertEqual(summary["linesTotal"]["deletions"], 3)
+        self.assertEqual(summary["linesTotal"]["net"], 10)
+        self.assertEqual(summary["linesByDate"]["2026-10-01"]["additions"], 10)
+
+    def test_parse_scc_json_sums_code_comment_blank(self):
+        api = self.api()
+        payload = [
+            {
+                "Name": "Python",
+                "Lines": 100,
+                "Code": 70,
+                "Comment": 10,
+                "Blank": 20,
+                "Count": 2,
+                "Complexity": 12,
+            },
+            {
+                "Name": "Markdown",
+                "Lines": 50,
+                "Code": 40,
+                "Comment": 0,
+                "Blank": 10,
+                "Count": 1,
+            },
+            {
+                "Name": "JSON",
+                "Lines": 20,
+                "Code": 20,
+                "Comment": 0,
+                "Blank": 0,
+                "Count": 3,
+            },
+            {
+                "Name": "CSS",
+                "Lines": 30,
+                "Code": 30,
+                "Comment": 0,
+                "Blank": 0,
+                "Count": 1,
+            },
+            {
+                "Name": "XML",
+                "Lines": 40,
+                "Code": 40,
+                "Comment": 0,
+                "Blank": 0,
+                "Count": 2,
+            },
+            {
+                "Name": "Dockerfile",
+                "Lines": 15,
+                "Code": 15,
+                "Comment": 0,
+                "Blank": 0,
+                "Count": 1,
+            },
+        ]
+        loc = api.parse_scc_json(payload)
+        self.assertEqual(loc["locCode"], 70)
+        self.assertEqual(loc["locComment"], 10)
+        self.assertEqual(loc["locBlank"], 20)
+        self.assertEqual(loc["locLines"], 100)
+        self.assertEqual(loc["locFiles"], 2)
+        self.assertEqual(loc["locComplexity"], 12)
+        self.assertEqual(loc["locByLanguage"][0]["name"], "Python")
+        self.assertEqual(loc["locByLanguage"][0]["complexity"], 12)
+        self.assertEqual(len(loc["locByLanguage"]), 1)
+        self.assertIn("TypeScript Typings", api.SCC_EXCLUDE_LANGUAGES)
+
+    def test_collect_scc_loc_uses_scc_when_available(self):
+        api = self.api()
+        repo = self.repo("scc-repo")
+        (repo / "main.py").write_text("# hi\nprint(1)\n\n")
+        self.git(repo, "add", ".")
+        self.git(repo, "commit", "-m", "code")
+        try:
+            loc = api.collect_scc_loc(str(repo))
+        except ValueError as error:
+            if "not installed" in str(error):
+                self.skipTest("scc not installed")
+            raise
+        self.assertGreaterEqual(loc["locCode"], 1)
+        self.assertIsInstance(loc["locByLanguage"], list)
 
     def test_activity_summary_marks_quiet_and_burst_weeks(self):
         api = self.api()
