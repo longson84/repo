@@ -102,7 +102,12 @@ async function api(path, body) {
       signal: controller.signal,
     });
     const result = await response.json();
-    if (!response.ok) throw Error(result.error || 'Companion request failed.');
+    if (!response.ok) {
+      const error = Error(result.error || 'Companion request failed.');
+      error.status = response.status;
+      error.code = result.code || null;
+      throw error;
+    }
     return result;
   } finally {
     clearTimeout(timer);
@@ -657,6 +662,7 @@ function openAi() {
 let aiDetect = null;
 let aiSessions = null;
 let aiUsage = null;
+let aiUsageInvalidatedByIdentity = false;
 let aiSearch = null;
 let aiBusy = false;
 let aiTab = 'detect'; // detect | sessions | tokens | search
@@ -754,6 +760,7 @@ async function runAiUsage() {
     const body = {};
     if (aiUsageFilter.source) body.sources = [aiUsageFilter.source];
     aiUsage = await api('ai/usage', body);
+    aiUsageInvalidatedByIdentity = false;
     toast('Usage aggregated.');
   } catch (error) {
     toast(error.message || 'Usage failed.');
@@ -1243,7 +1250,11 @@ function paintAiTokensPanel() {
   if (!paired) {
     rows = `<tr><td colspan="8"><div class="callout">Connect the companion to aggregate token usage.</div></td></tr>`;
   } else if (!aiUsage) {
-    rows = `<tr><td colspan="8"><div class="callout">Click Aggregate to sum Antigravity, Claude Code, and Codex usage from local stores.</div></td></tr>`;
+    rows = `<tr><td colspan="8"><div class="callout">${
+      aiUsageInvalidatedByIdentity
+        ? 'Project grouping changed. Run Aggregate to rebuild project and model attribution.'
+        : 'Click Aggregate to sum Antigravity, Claude Code, and Codex usage from local stores.'
+    }</div></td></tr>`;
   } else if (aiUsageGroup === 'period') {
     firstCol = aiUsagePeriod[0].toUpperCase() + aiUsagePeriod.slice(1);
     if (!series.length) {
@@ -3019,6 +3030,44 @@ function restoreProjectManagerFocus(selector) {
   document.querySelector(selector)?.focus();
 }
 
+function saveProjectIdentityDraft(draft, fingerprint) {
+  return api('project-identities', {
+    version: draft.version,
+    projects: draft.projects,
+    expected_fingerprint: fingerprint,
+  });
+}
+
+async function persistProjectIdentityChange(draft, fingerprint, hooks = {}) {
+  let saved;
+  try {
+    saved = await saveProjectIdentityDraft(draft, fingerprint);
+  } catch (error) {
+    if (error.status === 409 && error.code === 'identity_config_conflict') {
+      const current = await api('project-identities');
+      if (hooks.onConflict) hooks.onConflict(current, error);
+      return { status: 'conflict', config: current, error };
+    }
+    throw error;
+  }
+
+  aiUsage = null;
+  aiUsageInvalidatedByIdentity = true;
+  aiUsagePeriodKey = null;
+  aiUsageExpandedProjects.clear();
+  aiUsageExpandedModels.clear();
+  (hooks.closeDrawer || close)();
+
+  try {
+    await (hooks.refresh || (() => runScan({ throwOnError: true })))();
+    return { status: 'saved', config: saved };
+  } catch (error) {
+    toast(`Project saved; scan failed. Use Scan to retry: ${error.message}`);
+    if (hooks.onRefreshError) hooks.onRefreshError(error);
+    return { status: 'refresh_failed', config: saved, error };
+  }
+}
+
 async function manage() {
   if (!paired) return connect();
   let discoveredWorkspaces = [];
@@ -3118,21 +3167,26 @@ async function manage() {
     }
     bindProjectManagerActions();
   };
-  const persistProjectDraft = (draft) =>
-    api('project-identities', { version: draft.version, projects: draft.projects });
   const completeProjectAction = async (action, focusSelector) => {
     try {
+      let outcome = null;
       identityConfig = await submitProjectManagerAction(
         identityConfig,
         action,
-        persistProjectDraft,
+        async (draft) => {
+          outcome = await persistProjectIdentityChange(draft, identityConfig.fingerprint);
+          return outcome.config;
+        },
       );
+      if (outcome.status === 'conflict') {
+        draw();
+        $('settingsError').textContent =
+          'Project grouping changed in another editor. Review the latest configuration and repeat your action.';
+        return;
+      }
       bulkEditorMode = null;
       lifecycleEditor = null;
       selectedRepositoryIds.clear();
-      draw();
-      $('settingsError').textContent = 'Project grouping saved.';
-      restoreProjectManagerFocus(focusSelector);
     } catch (error) {
       showProjectManagerError(error);
     }
@@ -3298,8 +3352,19 @@ async function manage() {
     $('settingsError').textContent = `Could not load project grouping: ${error.message}`;
   }
 }
-async function runScan() {
-  if (!paired || busy || statsBusy || !paths.length) return;
+async function runScan(options = {}) {
+  if (!paired || busy || statsBusy || !paths.length) {
+    if (options?.throwOnError) {
+      throw new Error(
+        !paired
+          ? 'Companion is not connected.'
+          : !paths.length
+            ? 'No repositories are tracked.'
+            : 'Another scan is already running.',
+      );
+    }
+    return;
+  }
   busy = true;
   statsBusy = true;
   render();
@@ -3323,6 +3388,7 @@ async function runScan() {
     );
   } catch (e) {
     toast('Scan failed: ' + e.message);
+    if (options?.throwOnError) throw e;
   } finally {
     busy = false;
     statsBusy = false;

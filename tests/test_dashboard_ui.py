@@ -15,7 +15,7 @@ const fs = require('fs');
 const vm = require('vm');
 function element() {
   return new Proxy({
-    value: 'current', hidden: false, innerHTML: '', textContent: '', disabled: false,
+    value: 'current', hidden: false, innerHTML: '', textContent: '', disabled: false, style: {},
     classList: {add(){}, remove(){}, toggle(){}, contains(){return false;}},
     focus(){}, setSelectionRange(){}, querySelectorAll(){return [];},
   }, {get(target, key) { return key in target ? target[key] : null; }, set(target, key, value) { target[key] = value; return true; }});
@@ -41,13 +41,16 @@ vm.runInContext(fs.readFileSync('dist/app.js', 'utf8'), context);
 const output = vm.runInContext(process.argv[1], context);
 Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(value)));
 """
-        completed = subprocess.run(
-            ["node", "-e", harness, expression],
-            cwd=ROOT,
-            check=True,
-            text=True,
-            capture_output=True,
-        )
+        try:
+            completed = subprocess.run(
+                ["node", "-e", harness, expression],
+                cwd=ROOT,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as error:
+            self.fail(error.stderr)
         return json.loads(completed.stdout)
 
     def test_model_rows_render_stable_model_toggle_and_nested_project(self):
@@ -277,6 +280,101 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
         self.assertTrue(result["unchanged"])
         self.assertEqual(result["error"], "Server says duplicate name")
         self.assertTrue(result["focused"])
+
+    def test_api_exposes_structured_http_error(self):
+        result = self.render(
+            "(() => { fetch=async()=>({ok:false,status:409,json:async()=>({"
+            "error:'Reload grouping',code:'identity_config_conflict'})});"
+            "return api('project-identities',{version:1,projects:[]}).catch(error=>({"
+            "message:error.message,status:error.status,code:error.code})); })()"
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "message": "Reload grouping",
+                "status": 409,
+                "code": "identity_config_conflict",
+            },
+        )
+
+    def test_project_identity_save_includes_fingerprint_and_complete_document(self):
+        result = self.render(
+            "(() => { let body=null; fetch=async(_url,options)=>{body=JSON.parse(options.body);"
+            "return {ok:true,status:200,json:async()=>({version:1,projects:body.projects,"
+            "fingerprint:'new-fingerprint',warnings:[]})};};"
+            "return saveProjectIdentityDraft({version:1,projects:[{id:'general',name:'General',"
+            "repositories:[],primary_workspaces:{},workspace_aliases:[]}],warnings:[{code:'keep-out'}]},"
+            "'old-fingerprint').then(saved=>({body,saved})); })()"
+        )
+
+        self.assertEqual(result["body"]["expected_fingerprint"], "old-fingerprint")
+        self.assertEqual(result["body"]["version"], 1)
+        self.assertEqual(result["body"]["projects"][0]["id"], "general")
+        self.assertNotIn("warnings", result["body"])
+        self.assertEqual(result["saved"]["fingerprint"], "new-fingerprint")
+
+    def test_project_identity_conflict_reloads_and_keeps_editor_open(self):
+        result = self.render(
+            "(() => { let calls=0; fetch=async()=>{calls+=1; return calls===1?"
+            "{ok:false,status:409,json:async()=>({error:'Conflict',code:'identity_config_conflict'})}:"
+            "{ok:true,status:200,json:async()=>({version:1,projects:[{id:'newer',name:'Newer'}],"
+            "fingerprint:'newer-fingerprint',warnings:[]})};}; aiUsage={old:true};"
+            "let closed=0,refreshed=0; return persistProjectIdentityChange({version:1,projects:[]},"
+            "'stale',{closeDrawer:()=>{closed+=1},refresh:()=>{refreshed+=1}}).then(result=>({"
+            "status:result.status,project:result.config.projects[0].id,closed,refreshed,"
+            "usageStillLoaded:aiUsage.old===true})); })()"
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "status": "conflict",
+                "project": "newer",
+                "closed": 0,
+                "refreshed": 0,
+                "usageStillLoaded": True,
+            },
+        )
+
+    def test_project_identity_save_invalidates_ai_and_reports_refresh_failure(self):
+        result = self.render(
+            "(() => { fetch=async(_url,options)=>({ok:true,status:200,json:async()=>({version:1,"
+            "projects:JSON.parse(options.body).projects,fingerprint:'fresh',warnings:[]})});"
+            "paired=true; aiUsage={totals:{input_tokens:99}}; aiUsageInvalidatedByIdentity=false; let closed=0;"
+            "return persistProjectIdentityChange({version:1,projects:[]},'old',{"
+            "closeDrawer:()=>{closed+=1},refresh:()=>Promise.reject(new Error('offline'))})"
+            ".then(result=>({status:result.status,closed,aiUsage,invalidated:aiUsageInvalidatedByIdentity,"
+            "message:document.getElementById('toast').textContent,panel:paintAiTokensPanel()})); })()"
+        )
+
+        self.assertEqual(result["status"], "refresh_failed")
+        self.assertEqual(result["closed"], 1)
+        self.assertIsNone(result["aiUsage"])
+        self.assertTrue(result["invalidated"])
+        self.assertIn("Project saved; scan failed", result["message"])
+        self.assertIn("Project grouping changed", result["panel"])
+        self.assertIn("Aggregate", result["panel"])
+
+    def test_successful_ai_aggregate_clears_grouping_staleness(self):
+        result = self.render(
+            "(() => { paired=true; aiTab='tokens'; aiUsageInvalidatedByIdentity=true;"
+            "fetch=async()=>({ok:true,status:200,json:async()=>({totals:{input_tokens:3},"
+            "by_date:[],by_project:[],by_model:[],by_surface:[],by_tool:[],caveats:[]})});"
+            "return runAiUsage().then(()=>({invalidated:aiUsageInvalidatedByIdentity,"
+            "input:aiUsage.totals.input_tokens})); })()"
+        )
+
+        self.assertEqual(result, {"invalidated": False, "input": 3})
+
+    def test_identity_refresh_reports_busy_scan_as_retryable_failure(self):
+        result = self.render(
+            "(() => { paired=true; paths=['/work/a']; busy=true;"
+            "return runScan({throwOnError:true}).then(()=>({message:null}),"
+            "error=>({message:error.message})); })()"
+        )
+
+        self.assertEqual(result, {"message": "Another scan is already running."})
 
 
 if __name__ == "__main__":
