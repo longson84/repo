@@ -2864,12 +2864,170 @@ function projectManagerRows(choices, selectedRepositoryIds, identityConfig) {
     .join('');
 }
 
+function projectBulkEditor(config, selectedRepositoryIds, mode = 'existing') {
+  const count = new Set(selectedRepositoryIds || []).size;
+  const projects = config?.projects || [];
+  const activeMode = mode === 'new' || mode === 'standalone' ? mode : 'existing';
+  return /* HTML */ `
+    <div class="project-editor" data-project-editor="bulk">
+      <strong>${count} ${count === 1 ? 'repository' : 'repositories'} selected</strong>
+      <label class="small" for="projectMode">Assignment</label>
+      <select id="projectMode">
+        <option value="existing" ${activeMode === 'existing' ? 'selected' : ''}>Existing project</option>
+        <option value="new" ${activeMode === 'new' ? 'selected' : ''}>New project</option>
+        <option value="standalone" ${activeMode === 'standalone' ? 'selected' : ''}>Standalone</option>
+      </select>
+      <label class="small" for="projectTarget" ${activeMode === 'existing' ? '' : 'hidden'}>Project</label>
+      <select id="projectTarget" ${activeMode === 'existing' ? '' : 'hidden'}>
+        ${projects
+          .map((project) => `<option value="${esc(project.id)}">${esc(project.name)}</option>`)
+          .join('')}
+      </select>
+      <label class="small" for="projectName" ${activeMode === 'new' ? '' : 'hidden'}>New project name</label>
+      <input id="projectName" ${activeMode === 'new' ? '' : 'hidden'} autocomplete="off" />
+      <div class="project-row-actions">
+        <button class="btn primary" type="button" id="projectApply">Apply</button>
+        <button class="btn" type="button" id="projectCancel">Cancel</button>
+      </div>
+    </div>
+  `;
+}
+
+function configuredProjectCards(config, visibleRepositoryIds) {
+  const visibleOccurrences = [...(visibleRepositoryIds || [])].filter(Boolean);
+  const visible = new Set(visibleOccurrences);
+  const projects = config?.projects || [];
+  if (!projects.length) return '<p class="small">No configured projects yet.</p>';
+  return projects
+    .map((project) => {
+      const repositories = project.repositories || [];
+      const visibleWorkspaceCount = visibleOccurrences.filter((repositoryId) =>
+        repositories.includes(repositoryId),
+      ).length;
+      const hiddenRepositoryCount = repositories.filter(
+        (repositoryId) => !visible.has(repositoryId),
+      ).length;
+      const protectedMappings =
+        (project.workspace_aliases || []).length ||
+        Object.keys(project.primary_workspaces || {}).length;
+      return /* HTML */ `
+        <section class="configured-project-card" data-configured-project="${esc(project.id)}">
+          <div>
+            <strong>${esc(project.name)}</strong>
+            <p class="small">
+              ${repositories.length} ${repositories.length === 1 ? 'repository' : 'repositories'} ·
+              ${visibleWorkspaceCount} visible ${visibleWorkspaceCount === 1 ? 'workspace' : 'workspaces'}
+              ${hiddenRepositoryCount ? ` · ${hiddenRepositoryCount} not currently visible` : ''}
+            </p>
+          </div>
+          <div class="project-row-actions">
+            <button class="btn" type="button" data-rename-project="${esc(project.id)}">Rename</button>
+            <button class="btn" type="button" data-ungroup-project="${esc(project.id)}" ${repositories.length ? '' : 'disabled'}>Ungroup repositories</button>
+            <button class="btn" type="button" data-delete-project="${esc(project.id)}" ${protectedMappings ? 'disabled' : ''}>Delete project</button>
+          </div>
+          ${
+            protectedMappings
+              ? '<p class="small">Delete is unavailable while historical aliases or primary workspaces are protected.</p>'
+              : ''
+          }
+          <div data-project-inline-editor="${esc(project.id)}"></div>
+        </section>
+      `;
+    })
+    .join('');
+}
+
+function projectLifecycleEditor(project, action) {
+  if (action === 'rename') {
+    return /* HTML */ `
+      <div class="project-editor" data-project-editor="rename">
+        <label class="small" for="projectRenameName">Project name</label>
+        <input id="projectRenameName" value="${esc(project.name)}" autocomplete="off" />
+        <div class="project-row-actions">
+          <button class="btn primary" type="button" data-confirm-project-action="rename">Save name</button>
+          <button class="btn" type="button" data-cancel-project-action>Cancel</button>
+        </div>
+      </div>
+    `;
+  }
+  const verb = action === 'delete' ? 'Delete project' : 'Make repositories standalone';
+  return /* HTML */ `
+    <div class="project-editor" data-project-editor="${esc(action)}">
+      <p class="small">${
+        action === 'delete'
+          ? 'The repositories remain tracked and return to standalone projects.'
+          : 'All repositories in this project will return to standalone projects.'
+      }</p>
+      <div class="project-row-actions">
+        <button class="btn primary" type="button" data-confirm-project-action="${esc(action)}">${verb}</button>
+        <button class="btn" type="button" data-cancel-project-action>Cancel</button>
+      </div>
+    </div>
+  `;
+}
+
+function bindProjectManagerRows(
+  choices,
+  selectedRepositoryIds,
+  persistTracking,
+  redraw,
+) {
+  document.querySelectorAll('[data-track-workspace]').forEach((control) => {
+    control.onchange = () => {
+      const row = choices.get(control.dataset.trackWorkspace);
+      if (!row) return;
+      row.tracked = control.checked;
+      persistTracking();
+    };
+  });
+  document.querySelectorAll('[data-group-repository]').forEach((control) => {
+    control.onchange = () => {
+      const repositoryId = control.dataset.groupRepository;
+      if (!repositoryId) return;
+      if (control.checked) selectedRepositoryIds.add(repositoryId);
+      else selectedRepositoryIds.delete(repositoryId);
+      redraw();
+    };
+  });
+}
+
+async function submitProjectManagerAction(config, action, persistDraft) {
+  let draft;
+  if (action.type === 'assign') {
+    draft = assignRepositories(config, action.repositoryIds, action.target).config;
+  } else if (action.type === 'standalone') {
+    draft = makeRepositoriesStandalone(config, action.repositoryIds);
+  } else if (action.type === 'rename') {
+    draft = renameConfiguredProject(config, action.projectId, action.name);
+  } else if (action.type === 'ungroup') {
+    const project = (config.projects || []).find((item) => item.id === action.projectId);
+    if (!project) throw new Error('Project no longer exists.');
+    draft = makeRepositoriesStandalone(config, project.repositories || []);
+  } else if (action.type === 'delete') {
+    draft = deleteConfiguredProject(config, action.projectId);
+  } else {
+    throw new Error('Unknown project action.');
+  }
+  return (await persistDraft(draft)) || draft;
+}
+
+function showProjectManagerError(error) {
+  $('settingsError').textContent = error?.message || String(error);
+}
+
+function restoreProjectManagerFocus(selector) {
+  document.querySelector(selector)?.focus();
+}
+
 async function manage() {
   if (!paired) return connect();
   let discoveredWorkspaces = [];
   let choices = projectManagerModel(paths, workspaces, discoveredWorkspaces);
   let identityConfig = null;
   const selectedRepositoryIds = new Set();
+  let bulkEditorMode = null;
+  let bulkAssignmentMode = 'existing';
+  let lifecycleEditor = null;
   let persistTimer = 0;
   open(
     /* HTML */ `
@@ -2923,26 +3081,163 @@ async function manage() {
   };
   const draw = () => {
     $('choices').innerHTML = projectManagerRows(choices, selectedRepositoryIds, identityConfig);
-    document.querySelectorAll('[data-track-workspace]').forEach((control) => {
-      control.onchange = () => {
-        const row = choices.get(control.dataset.trackWorkspace);
-        if (!row) return;
-        row.tracked = control.checked;
-        persist();
-      };
-    });
-    document.querySelectorAll('[data-group-repository]').forEach((control) => {
-      control.onchange = () => {
-        const repositoryId = control.dataset.groupRepository;
-        if (!repositoryId) return;
-        if (control.checked) selectedRepositoryIds.add(repositoryId);
-        else selectedRepositoryIds.delete(repositoryId);
+    bindProjectManagerRows(choices, selectedRepositoryIds, persist, draw);
+    if (!identityConfig) {
+      $('projectManagerActions').innerHTML = '<p class="small">Loading project grouping…</p>';
+      return;
+    }
+    const visibleRepositoryIds = [...choices.values()].map((row) => row.repository_id);
+    $('projectManagerActions').innerHTML = /* HTML */ `
+      <div class="project-bulk-toolbar">
+        <strong>${selectedRepositoryIds.size} selected</strong>
+        <div class="project-row-actions">
+          <button class="btn primary" type="button" id="groupSelected" ${selectedRepositoryIds.size ? '' : 'disabled'}>Group selected</button>
+          <button class="btn" type="button" id="clearProjectSelection" ${selectedRepositoryIds.size ? '' : 'disabled'}>Clear selection</button>
+        </div>
+      </div>
+      ${
+        bulkEditorMode === 'bulk'
+          ? projectBulkEditor(identityConfig, selectedRepositoryIds, bulkAssignmentMode)
+          : ''
+      }
+      <h4>Configured projects</h4>
+      <div class="configured-project-list">
+        ${configuredProjectCards(identityConfig, visibleRepositoryIds)}
+      </div>
+    `;
+    if (lifecycleEditor) {
+      const project = (identityConfig.projects || []).find(
+        (item) => item.id === lifecycleEditor.projectId,
+      );
+      const container = document.querySelector(
+        `[data-project-inline-editor="${lifecycleEditor.projectId}"]`,
+      );
+      if (project && container) {
+        container.innerHTML = projectLifecycleEditor(project, lifecycleEditor.type);
+      }
+    }
+    bindProjectManagerActions();
+  };
+  const persistProjectDraft = (draft) =>
+    api('project-identities', { version: draft.version, projects: draft.projects });
+  const completeProjectAction = async (action, focusSelector) => {
+    try {
+      identityConfig = await submitProjectManagerAction(
+        identityConfig,
+        action,
+        persistProjectDraft,
+      );
+      bulkEditorMode = null;
+      lifecycleEditor = null;
+      selectedRepositoryIds.clear();
+      draw();
+      $('settingsError').textContent = 'Project grouping saved.';
+      restoreProjectManagerFocus(focusSelector);
+    } catch (error) {
+      showProjectManagerError(error);
+    }
+  };
+  const bindProjectManagerActions = () => {
+    $('groupSelected').onclick = () => {
+      bulkEditorMode = 'bulk';
+      lifecycleEditor = null;
+      draw();
+      $('projectMode').focus();
+    };
+    $('clearProjectSelection').onclick = () => {
+      selectedRepositoryIds.clear();
+      bulkEditorMode = null;
+      draw();
+      restoreProjectManagerFocus('#groupSelected');
+    };
+    if (bulkEditorMode === 'bulk') {
+      $('projectMode').onchange = () => {
+        bulkAssignmentMode = $('projectMode').value;
         draw();
+        $('projectMode').focus();
+      };
+      $('projectCancel').onclick = () => {
+        bulkEditorMode = null;
+        draw();
+        restoreProjectManagerFocus('#groupSelected');
+      };
+      $('projectApply').onclick = () => {
+        if (!selectedRepositoryIds.size) {
+          showProjectManagerError(new Error('Select at least one repository.'));
+          return;
+        }
+        if (bulkAssignmentMode === 'standalone') {
+          completeProjectAction(
+            { type: 'standalone', repositoryIds: [...selectedRepositoryIds] },
+            '#groupSelected',
+          );
+          return;
+        }
+        const target =
+          bulkAssignmentMode === 'new'
+            ? { name: $('projectName').value }
+            : { projectId: $('projectTarget').value };
+        completeProjectAction(
+          { type: 'assign', repositoryIds: [...selectedRepositoryIds], target },
+          '#groupSelected',
+        );
+      };
+    }
+    document.querySelectorAll('[data-rename-project]').forEach((button) => {
+      button.onclick = () => {
+        lifecycleEditor = { type: 'rename', projectId: button.dataset.renameProject };
+        bulkEditorMode = null;
+        draw();
+        $('projectRenameName').focus();
       };
     });
-    $('projectManagerActions').innerHTML = identityConfig
-      ? `<p class="small">${selectedRepositoryIds.size} repositor${selectedRepositoryIds.size === 1 ? 'y' : 'ies'} selected for grouping.</p>`
-      : '<p class="small">Loading project grouping…</p>';
+    document.querySelectorAll('[data-ungroup-project]').forEach((button) => {
+      button.onclick = () => {
+        lifecycleEditor = { type: 'ungroup', projectId: button.dataset.ungroupProject };
+        bulkEditorMode = null;
+        draw();
+        document.querySelector('[data-confirm-project-action]')?.focus();
+      };
+    });
+    document.querySelectorAll('[data-delete-project]').forEach((button) => {
+      button.onclick = () => {
+        lifecycleEditor = { type: 'delete', projectId: button.dataset.deleteProject };
+        bulkEditorMode = null;
+        draw();
+        document.querySelector('[data-confirm-project-action]')?.focus();
+      };
+    });
+    const cancelLifecycle = document.querySelector('[data-cancel-project-action]');
+    if (cancelLifecycle && lifecycleEditor) {
+      cancelLifecycle.onclick = () => {
+        const selector = `[data-${lifecycleEditor.type}-project="${lifecycleEditor.projectId}"]`;
+        lifecycleEditor = null;
+        draw();
+        restoreProjectManagerFocus(selector);
+      };
+    }
+    const confirmLifecycle = document.querySelector('[data-confirm-project-action]');
+    if (confirmLifecycle && lifecycleEditor) {
+      confirmLifecycle.onclick = () => {
+        const action = lifecycleEditor;
+        const focusSelector = `[data-${action.type}-project="${action.projectId}"]`;
+        if (action.type === 'rename') {
+          completeProjectAction(
+            {
+              type: 'rename',
+              projectId: action.projectId,
+              name: $('projectRenameName').value,
+            },
+            focusSelector,
+          );
+        } else {
+          completeProjectAction(
+            { type: action.type, projectId: action.projectId },
+            focusSelector,
+          );
+        }
+      };
+    }
   };
   draw();
   $('selectAll').onclick = () => {

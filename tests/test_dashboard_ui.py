@@ -39,7 +39,7 @@ vm.createContext(context);
 vm.runInContext(fs.readFileSync('dist/project_groups.js', 'utf8'), context);
 vm.runInContext(fs.readFileSync('dist/app.js', 'utf8'), context);
 const output = vm.runInContext(process.argv[1], context);
-process.stdout.write(JSON.stringify(output));
+Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(value)));
 """
         completed = subprocess.run(
             ["node", "-e", harness, expression],
@@ -187,6 +187,96 @@ process.stdout.write(JSON.stringify(output));
             r'<input[^>]*data-group-repository=""[^>]*aria-label="Select Unknown for grouping"[^>]*disabled',
         )
         self.assertIn('data-track-workspace="/work/unknown"', html)
+
+    def test_project_bulk_editor_options(self):
+        html = self.render(
+            "projectBulkEditor({version:1,projects:["
+            "{id:'general',name:'General'},{id:'product',name:'Product'}]},"
+            "new Set(['repo:a','repo:b']),'existing')"
+        )
+
+        self.assertIn("2 repositories selected", html)
+        self.assertIn('class="project-row-actions"', html)
+        self.assertIn('value="existing" selected', html)
+        self.assertIn('value="new"', html)
+        self.assertIn("New project", html)
+        self.assertIn('value="standalone"', html)
+        self.assertIn("Standalone", html)
+        self.assertIn('value="general"', html)
+        self.assertIn("General", html)
+        self.assertIn('id="projectApply"', html)
+        self.assertIn('id="projectCancel"', html)
+
+    def test_project_cards_protect_advanced_mappings(self):
+        html = self.render(
+            "configuredProjectCards({version:1,projects:["
+            "{id:'history',name:'History',repositories:['repo:a','repo:hidden'],"
+            "workspace_aliases:['/old/a'],primary_workspaces:{'repo:a':'/work/a'}},"
+            "{id:'plain',name:'Plain',repositories:['repo:p'],workspace_aliases:[],"
+            "primary_workspaces:{}}]},['repo:a','repo:a','repo:p'])"
+        )
+
+        self.assertIn('class="configured-project-card"', html)
+        self.assertIn("2 repositories", html)
+        self.assertIn("2 visible workspaces", html)
+        self.assertIn("1 not currently visible", html)
+        self.assertRegex(
+            html,
+            r'data-delete-project="history"[^>]*disabled',
+        )
+        self.assertIn("historical aliases or primary workspaces", html)
+        self.assertRegex(html, r'data-delete-project="plain"(?![^>]*disabled)')
+        self.assertIn('class="project-row-actions"', html)
+
+    def test_project_manager_bindings_keep_grouping_and_tracking_independent(self):
+        result = self.render(
+            "(() => { const group={dataset:{groupRepository:'repo:shared'},checked:true};"
+            "const track={dataset:{trackWorkspace:'/work/a'},checked:false};"
+            "document.querySelectorAll=(selector)=>selector==='[data-group-repository]'?[group]:"
+            "selector==='[data-track-workspace]'?[track]:[];"
+            "const choices=new Map([['/work/a',{workspace_id:'/work/a',tracked:true}]]);"
+            "const selected=new Set(); let trackingWrites=0; let redraws=0;"
+            "bindProjectManagerRows(choices,selected,()=>{trackingWrites+=1},()=>{redraws+=1});"
+            "group.onchange(); const afterGroup={trackingWrites,selected:[...selected],redraws};"
+            "track.onchange(); return {afterGroup,afterTrack:{trackingWrites,tracked:choices.get('/work/a').tracked}}; })()"
+        )
+
+        self.assertEqual(
+            result["afterGroup"],
+            {"trackingWrites": 0, "selected": ["repo:shared"], "redraws": 1},
+        )
+        self.assertEqual(result["afterTrack"], {"trackingWrites": 1, "tracked": False})
+
+    def test_project_action_hands_complete_deduplicated_draft_to_persistence(self):
+        result = self.render(
+            "(() => { const config={version:1,projects:[{id:'old',name:'Old',"
+            "repositories:['repo:a'],primary_workspaces:{},workspace_aliases:[]}]};"
+            "let persisted=null; return submitProjectManagerAction(config,{type:'assign',"
+            "repositoryIds:['repo:a','repo:b','repo:b'],target:{name:'General'}},"
+            "draft=>{persisted=draft; return draft;}).then(draft=>({draft,persisted})); })()"
+        )
+
+        self.assertEqual(result["draft"], result["persisted"])
+        general = next(
+            project for project in result["draft"]["projects"] if project["id"] == "general"
+        )
+        self.assertEqual(general["repositories"], ["repo:a", "repo:b"])
+        self.assertEqual(result["draft"]["version"], 1)
+
+    def test_project_action_error_preserves_working_config_and_focus_helper_restores_trigger(self):
+        result = self.render(
+            "(() => { const config={version:1,projects:[{id:'old',name:'Old',repositories:[],"
+            "primary_workspaces:{},workspace_aliases:[]}]}; const before=JSON.stringify(config);"
+            "let focused=false; document.querySelector=()=>({focus(){focused=true}});"
+            "return submitProjectManagerAction(config,{type:'rename',projectId:'old',name:'New'},"
+            "()=>Promise.reject(new Error('Server says duplicate name'))).catch(error=>{"
+            "showProjectManagerError(error); restoreProjectManagerFocus('[data-rename-project=old]');"
+            "return {unchanged:JSON.stringify(config)===before,error:document.getElementById('settingsError').textContent,focused};}); })()"
+        )
+
+        self.assertTrue(result["unchanged"])
+        self.assertEqual(result["error"], "Server says duplicate name")
+        self.assertTrue(result["focused"])
 
 
 if __name__ == "__main__":
