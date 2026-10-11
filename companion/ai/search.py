@@ -29,6 +29,29 @@ MAX_FILE_BYTES = 32 * 1024 * 1024
 MAX_RG_FILES = 4000
 
 
+def _canonical_path(value: Any) -> Optional[str]:
+    if not isinstance(value, (str, Path)):
+        return None
+    try:
+        return str(Path(value).expanduser().resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def allowed_transcript_paths(rows: Sequence[dict]) -> set[str]:
+    """Return every physical transcript path represented by scoped sessions."""
+    allowed = set()
+    for row in rows:
+        values = [row.get("path"), *(row.get("paths") or [])]
+        for execution in row.get("executions") or []:
+            values.extend([execution.get("path"), *(execution.get("paths") or [])])
+        for value in values:
+            normalized = _canonical_path(value)
+            if normalized:
+                allowed.add(normalized)
+    return allowed
+
+
 def _snippet(text: str, needle: str, *, width: int = SNIPPET_LEN) -> str:
     compact = " ".join(text.split())
     if not compact:
@@ -408,6 +431,7 @@ def search_transcripts(
     env: Optional[Mapping[str, str]] = None,
     home: Optional[Path] = None,
     prefer_rg: bool = True,
+    allowed_paths: Optional[set[str]] = None,
 ) -> dict:
     """Search wave-1 transcript stores. Case-insensitive literal match."""
     query = (q or "").strip()
@@ -437,6 +461,18 @@ def search_transcripts(
             continue
         scanned.append(sid)
         targets.extend(list(iter_text_targets(source)))
+
+    if allowed_paths is not None:
+        normalized_allowed = {
+            normalized
+            for value in allowed_paths
+            if (normalized := _canonical_path(value)) is not None
+        }
+        targets = [
+            target
+            for target in targets
+            if _canonical_path(target.get("path")) in normalized_allowed
+        ]
 
     engine = "python"
     hits: list[dict[str, Any]] = []

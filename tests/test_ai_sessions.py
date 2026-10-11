@@ -1,9 +1,11 @@
 import json
 import pathlib
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 COMPANION = ROOT / "companion"
@@ -11,6 +13,7 @@ sys.path.insert(0, str(COMPANION))
 
 from ai import sessions as sessions_mod  # noqa: E402
 from ai.adapters import antigravity, claude_code, codex, cursor  # noqa: E402
+from project_identity import ProjectIdentityResolver  # noqa: E402
 
 
 class SessionAdapterTests(unittest.TestCase):
@@ -18,6 +21,152 @@ class SessionAdapterTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.home = pathlib.Path(self.temp.name)
+
+    def _repo(self, name, remote):
+        path = self.home / name
+        path.mkdir()
+        subprocess.run(
+            ["git", "-C", str(path), "init", "-b", "main"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.email", "ai@example.test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.name", "AI Test"],
+            check=True,
+        )
+        (path / "README.md").write_text("test\n")
+        subprocess.run(["git", "-C", str(path), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(path), "commit", "-m", "initial"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "remote", "add", "origin", remote],
+            check=True,
+        )
+        return path
+
+    def test_sessions_are_scoped_and_annotated_before_conversation_merge(self):
+        selected = self._repo("selected", "https://github.com/example/selected.git")
+        linked = self.home / "selected-linked"
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(selected),
+                "worktree",
+                "add",
+                "-b",
+                "linked",
+                str(linked),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        unselected = self._repo(
+            "unselected", "https://github.com/example/unselected.git"
+        )
+        scratch = self.home / "scratch"
+        scratch.mkdir()
+        missing = self.home / "missing"
+        selected_id = "remote:github.com/example/selected"
+        resolver = ProjectIdentityResolver(
+            {
+                "version": 1,
+                "projects": [
+                    {
+                        "id": "general",
+                        "name": "General",
+                        "repositories": [selected_id],
+                    }
+                ],
+            }
+        )
+        transcript_root = self.home / "transcripts"
+        transcript_root.mkdir()
+        rows = [
+            {
+                "id": "one",
+                "source_id": "claude.code",
+                "conversation_key": "shared",
+                "cwd": str(selected),
+                "path": str(transcript_root / "selected.jsonl"),
+                "project": "selected",
+            },
+            {
+                "id": "one-copy",
+                "source_id": "codex.home",
+                "conversation_key": "shared",
+                "cwd": str(linked),
+                "path": str(transcript_root / "linked.jsonl"),
+                "project": "selected-linked",
+            },
+            {
+                "id": "other",
+                "source_id": "claude.code",
+                "conversation_key": "other",
+                "cwd": str(unselected),
+                "path": str(transcript_root / "unselected.jsonl"),
+            },
+            {
+                "id": "scratch",
+                "source_id": "claude.code",
+                "conversation_key": "scratch",
+                "cwd": str(scratch),
+                "path": str(transcript_root / "scratch.jsonl"),
+            },
+            {
+                "id": "missing",
+                "source_id": "claude.code",
+                "conversation_key": "missing",
+                "cwd": str(missing),
+                "path": str(transcript_root / "missing.jsonl"),
+            },
+        ]
+        source = {
+            "id": "claude.code",
+            "path": str(transcript_root),
+            "surface": "cli",
+            "tool": "Claude Code",
+        }
+        with (
+            mock.patch.object(sessions_mod, "resolve_sources", return_value=[source]),
+            mock.patch.object(
+                sessions_mod, "list_sessions_for_source", return_value=rows
+            ),
+        ):
+            payload = sessions_mod.list_sessions(
+                project="General",
+                limit=10,
+                identity_resolver=resolver,
+                allowed_repository_ids={selected_id},
+            )
+            empty = sessions_mod.list_sessions(
+                limit=10,
+                identity_resolver=resolver,
+                allowed_repository_ids=set(),
+            )
+
+        self.assertEqual(payload["conversation_count"], 1)
+        self.assertEqual(payload["representation_count"], 2)
+        session = payload["sessions"][0]
+        self.assertEqual(session["project_id"], "general")
+        self.assertEqual(session["project"], "General")
+        self.assertEqual(session["repository_id"], selected_id)
+        self.assertEqual(
+            set(session["paths"]),
+            {
+                str(transcript_root / "selected.jsonl"),
+                str(transcript_root / "linked.jsonl"),
+            },
+        )
+        self.assertEqual(empty["conversation_count"], 0)
 
     def test_antigravity_lists_from_summaries_and_transcript(self):
         base = self.home / ".gemini" / "antigravity"

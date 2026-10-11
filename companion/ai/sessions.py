@@ -9,6 +9,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from .adapters import antigravity, claude_code, codex, cursor
 from .catalog import resolve_sources
+from project_identity import resolve_live_repository
 
 
 WAVE1_LISTABLE = {
@@ -29,7 +30,17 @@ def _sort_key(item: dict):
 
 def _matches_project(item: dict, project: str) -> bool:
     needle = project.lower()
-    for key in ("project", "cwd", "title", "preview", "path"):
+    for key in (
+        "project",
+        "project_id",
+        "project_name",
+        "repository_id",
+        "repository_name",
+        "cwd",
+        "title",
+        "preview",
+        "path",
+    ):
         value = item.get(key)
         if isinstance(value, str) and needle in value.lower():
             return True
@@ -109,6 +120,13 @@ def _merge_conversations(rows: Sequence[dict]) -> list[dict]:
                 "preview",
                 "path",
                 "identity_confidence",
+                "workspace_id",
+                "workspace_name",
+                "repository_id",
+                "repository_name",
+                "project_id",
+                "project_name",
+                "identity_warnings",
             ):
                 if row.get(field) is not None:
                     current[field] = row[field]
@@ -153,6 +171,8 @@ def collect_sessions(
     project: Optional[str] = None,
     env: Optional[Mapping[str, str]] = None,
     home: Optional[Path] = None,
+    identity_resolver: Optional[Any] = None,
+    allowed_repository_ids: Optional[set[str]] = None,
 ) -> list[dict]:
     """Return all matching logical conversations before sorting and limiting."""
     resolved = resolve_sources(env=env, home=home)
@@ -169,7 +189,31 @@ def collect_sessions(
             continue
         if not Path(source["path"]).exists():
             continue
-        representations.extend(list_sessions_for_source(source))
+        for representation in list_sessions_for_source(source):
+            if allowed_repository_ids is None:
+                representations.append(representation)
+                continue
+            if identity_resolver is None:
+                raise ValueError(
+                    "identity_resolver is required when repository scope is provided"
+                )
+            cwd = representation.get("cwd")
+            if not isinstance(cwd, str) or not cwd.strip():
+                continue
+            try:
+                repository_id, _ = resolve_live_repository(
+                    cwd, identity_resolver.git_runner
+                )
+            except (OSError, TypeError, ValueError):
+                continue
+            if repository_id not in allowed_repository_ids:
+                continue
+            identity = identity_resolver.resolve(cwd)
+            scoped = copy.deepcopy(representation)
+            scoped.update(identity)
+            scoped["project"] = identity["project_name"]
+            scoped["repository"] = identity["repository_name"]
+            representations.append(scoped)
     collected = _merge_conversations(representations)
     if project:
         project = project.strip()
@@ -232,6 +276,8 @@ def list_sessions(
     home: Optional[Path] = None,
     include_executions: bool = False,
     conversation_keys: Optional[Sequence[str]] = None,
+    identity_resolver: Optional[Any] = None,
+    allowed_repository_ids: Optional[set[str]] = None,
 ) -> dict:
     """Return logical conversations, newest first."""
     if limit < 1:
@@ -245,7 +291,14 @@ def list_sessions(
         for source in resolved
         if source["id"] in WAVE1_LISTABLE and (wanted is None or source["id"] in wanted)
     ]
-    collected = collect_sessions(sources=sources, project=project, env=env, home=home)
+    collected = collect_sessions(
+        sources=sources,
+        project=project,
+        env=env,
+        home=home,
+        identity_resolver=identity_resolver,
+        allowed_repository_ids=allowed_repository_ids,
+    )
     if conversation_keys:
         wanted_keys = set(conversation_keys)
         unknown = wanted_keys - {str(row.get("conversation_key")) for row in collected}

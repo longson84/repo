@@ -4,6 +4,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "companion"))
@@ -146,6 +147,83 @@ class SearchTests(unittest.TestCase):
         )
         self.assertEqual(result["count"], 1)
         self.assertEqual(result["hits"][0]["session_id"], "chat1")
+
+    def test_allowed_transcript_paths_include_representations_and_executions(self):
+        paths = search_mod.allowed_transcript_paths(
+            [
+                {
+                    "path": "/tmp/root.jsonl",
+                    "paths": ["/tmp/root.jsonl", "/tmp/copy.jsonl"],
+                    "executions": [
+                        {"path": "/tmp/child.jsonl"},
+                        {"paths": ["/tmp/child-two.jsonl"]},
+                    ],
+                }
+            ]
+        )
+
+        self.assertEqual(
+            paths,
+            {
+                str(pathlib.Path("/tmp/root.jsonl").resolve()),
+                str(pathlib.Path("/tmp/copy.jsonl").resolve()),
+                str(pathlib.Path("/tmp/child.jsonl").resolve()),
+                str(pathlib.Path("/tmp/child-two.jsonl").resolve()),
+            },
+        )
+
+    def test_search_filters_targets_before_python_and_ripgrep_limits(self):
+        first_id = self._write_claude(f"first {NEEDLE}")
+        first = self.home / ".claude" / "projects" / "demo" / f"{first_id}.jsonl"
+        second = first.with_name("allowed.jsonl")
+        second.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "sessionId": "allowed",
+                    "message": {"content": f"allowed {NEEDLE}"},
+                }
+            )
+            + "\n"
+        )
+        allowed = {str(second.resolve())}
+
+        python_result = search_mod.search_transcripts(
+            NEEDLE,
+            sources=["claude.code"],
+            limit=1,
+            home=self.home,
+            prefer_rg=False,
+            allowed_paths=allowed,
+        )
+        empty = search_mod.search_transcripts(
+            NEEDLE,
+            sources=["claude.code"],
+            home=self.home,
+            prefer_rg=False,
+            allowed_paths=set(),
+        )
+        captured = []
+
+        def fake_rg(targets, needle, limit):
+            captured.extend(str(item["path"].resolve()) for item in targets)
+            return []
+
+        with (
+            mock.patch.object(search_mod, "_rg_available", return_value=True),
+            mock.patch.object(search_mod, "_rg_search", side_effect=fake_rg),
+        ):
+            search_mod.search_transcripts(
+                NEEDLE,
+                sources=["claude.code"],
+                home=self.home,
+                allowed_paths=allowed,
+            )
+
+        self.assertEqual(python_result["count"], 1)
+        self.assertEqual(python_result["hits"][0]["session_id"], "allowed")
+        self.assertEqual(empty["count"], 0)
+        self.assertEqual(captured, [str(second.resolve())])
 
 
 if __name__ == "__main__":

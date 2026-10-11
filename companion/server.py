@@ -31,9 +31,9 @@ if str(_COMPANION_DIR) not in sys.path:
     sys.path.insert(0, str(_COMPANION_DIR))
 from ai.catalog import resolve_sources  # noqa: E402
 from ai.detect import detect_all, load_detect_cache, save_detect_cache  # noqa: E402
-from ai.sessions import list_sessions  # noqa: E402
+from ai.sessions import collect_sessions, list_sessions  # noqa: E402
 from ai.usage import aggregate_usage  # noqa: E402
-from ai.search import search_transcripts  # noqa: E402
+from ai.search import allowed_transcript_paths, search_transcripts  # noqa: E402
 from project_identity import (  # noqa: E402
     EMPTY_CONFIG,
     ProjectIdentityResolver,
@@ -1346,6 +1346,8 @@ class State:
             limit=limit,
             include_executions=include_executions,
             conversation_keys=conversation_keys,
+            identity_resolver=self.identity_resolver,
+            allowed_repository_ids=self.selected_repository_ids(),
         )
 
     def list_ai_usage(self, data):
@@ -1407,7 +1409,18 @@ class State:
         limit = data.get("limit", 50)
         if not isinstance(limit, int):
             raise ValueError("limit must be an integer.")
-        return search_transcripts(q, sources=sources, limit=limit)
+        sessions = collect_sessions(
+            sources=sources,
+            identity_resolver=self.identity_resolver,
+            allowed_repository_ids=self.selected_repository_ids(),
+        )
+        allowed_paths = allowed_transcript_paths(sessions)
+        return search_transcripts(
+            q,
+            sources=sources,
+            limit=limit,
+            allowed_paths=allowed_paths,
+        )
 
     def checked(self, value):
         path = Path(value).expanduser().resolve(strict=True)

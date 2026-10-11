@@ -325,6 +325,60 @@ class AiApiTests(unittest.TestCase):
         self.assertEqual(data["sources"], ["claude.code"])
         self.assertIsInstance(data["count"], int)
 
+    def test_sessions_and_search_share_selected_repository_scope(self):
+        selected, _ = self.select_github_workspace("selected-ai")
+        unselected = self.root / "unselected-ai"
+        unselected.mkdir()
+        subprocess.run(
+            ["git", "-C", str(unselected), "init", "-b", "main"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(unselected),
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/example/unselected-ai.git",
+            ],
+            check=True,
+        )
+        project = self.root / ".claude" / "projects" / "scope"
+        project.mkdir(parents=True)
+        for session_id, cwd, text in (
+            ("included", selected, "scope needle included"),
+            ("excluded", unselected, "scope needle excluded"),
+        ):
+            (project / f"{session_id}.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "sessionId": session_id,
+                        "cwd": str(cwd),
+                        "message": {"content": text},
+                    }
+                )
+                + "\n"
+            )
+
+        status, sessions = self.request(
+            "POST", "/api/ai/sessions", {"sources": ["claude.code"]}
+        )
+        search_status, search = self.request(
+            "POST",
+            "/api/ai/search",
+            {"q": "scope needle", "sources": ["claude.code"]},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(search_status, 200)
+        self.assertEqual([row["id"] for row in sessions["sessions"]], ["included"])
+        self.assertEqual({row["session_id"] for row in search["hits"]}, {"included"})
+
     def test_usage_exposes_tokens_without_pricing(self):
         status, prices = self.request("GET", "/api/ai/prices")
         self.assertEqual(status, 404)
