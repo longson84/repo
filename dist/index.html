@@ -355,59 +355,341 @@
         border-color: #c5d3b5;
         font-weight: 650;
       }
-      .bar-chart {
+      .timeline-panel {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: white;
+        padding: 18px 18px 14px;
+        margin-top: 12px;
+      }
+      .timeline-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px 22px;
+        margin-bottom: 14px;
+        font-size: 12px;
+        color: #6b775d;
+      }
+      .timeline-meta strong {
+        color: #243019;
+        font-weight: 650;
+      }
+      .timeline-chart {
+        display: grid;
+        grid-template-columns: 36px 1fr;
+        gap: 8px;
+        min-height: 220px;
+      }
+      .timeline-y {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        align-items: flex-end;
+        padding: 22px 0 40px;
+        font-size: 10px;
+        color: #949b8c;
+      }
+      .timeline-plot {
+        position: relative;
         display: flex;
         align-items: flex-end;
+        justify-content: space-evenly;
         gap: 4px;
-        height: 160px;
-        padding: 12px 4px 0;
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        background: white;
-        overflow-x: auto;
+        width: 100%;
+        height: 248px;
+        padding: 22px 12px 40px;
+        border-left: 1px solid #e4e9dc;
+        border-bottom: 1px solid #e4e9dc;
+        box-sizing: border-box;
+        background:
+          repeating-linear-gradient(
+            to top,
+            transparent,
+            transparent calc(25% - 1px),
+            #eef1e8 calc(25% - 1px),
+            #eef1e8 25%
+          );
       }
-      .bar-chart .bar {
-        flex: 1 0 14px;
-        min-width: 10px;
+      .timeline-bar {
+        flex: 1 1 0;
+        min-width: 0;
+        max-width: none;
+        height: 100%;
         display: flex;
         flex-direction: column;
         justify-content: flex-end;
         align-items: center;
-        height: 100%;
+        position: relative;
       }
-      .bar-chart .bar i {
+      .timeline-plot.count-12 {
+        gap: 8px;
+        padding: 22px 8px 40px;
+      }
+      .timeline-plot.count-12 .timeline-bar {
+        max-width: 88px;
+      }
+      .timeline-bar b {
         display: block;
-        width: 100%;
-        max-width: 28px;
-        background: #9bb48a;
-        border-radius: 3px 3px 0 0;
-        min-height: 2px;
+        width: 58%;
+        max-width: 40px;
+        min-width: 10px;
+        background: linear-gradient(180deg, #8fb07a, #6f8f5a);
+        border-radius: 4px 4px 1px 1px;
+        min-height: 0;
       }
-      .bar-chart .bar span {
+      .timeline-plot.count-12 .timeline-bar b {
+        width: 70%;
+        max-width: 48px;
+      }
+      .timeline-bar.zero b {
+        min-height: 2px;
+        background: #d7ddcf;
+      }
+      .timeline-bar em {
+        position: absolute;
+        top: 0;
+        font-style: normal;
+        font-size: 10px;
+        font-weight: 650;
+        color: #4f6640;
+        opacity: 0;
+        transform: translateY(4px);
+        transition: opacity 0.12s ease;
+        pointer-events: none;
+      }
+      .timeline-bar:hover em,
+      .timeline-bar.peak em {
+        opacity: 1;
+        transform: none;
+      }
+      .timeline-bar:hover b {
+        background: linear-gradient(180deg, #6f8f5a, #557244);
+      }
+      .timeline-bar span {
+        position: absolute;
+        bottom: -36px;
+        left: 50%;
+        transform: translateX(-50%);
         font-size: 9px;
         color: #8b9383;
-        margin-top: 6px;
-        writing-mode: vertical-rl;
-        transform: rotate(180deg);
-        max-height: 48px;
+        text-align: center;
+        line-height: 1.15;
+        white-space: nowrap;
+        width: max-content;
+        max-width: none;
+      }
+      .timeline-plot.count-12 .timeline-bar span {
+        bottom: -34px;
+        font-size: 9px;
+        letter-spacing: -0.2px;
+      }
+      .timeline-bar span i {
+        display: block;
+        font-style: normal;
+      }
+      .cal-nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 16px 0 12px;
+      }
+      .cal-nav h3 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 650;
+        letter-spacing: -0.2px;
+        text-align: center;
+        line-height: 1.3;
+      }
+      .cal-nav .btn {
+        min-width: 88px;
+      }
+      .cal-dow-row {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 6px;
+        margin-bottom: 6px;
+      }
+      .cal-grid {
+        display: grid;
+        gap: 6px;
+      }
+      .cal-grid.days {
+        grid-template-columns: repeat(7, 1fr);
+        grid-auto-rows: 72px;
+      }
+      .cal-grid.weeks {
+        grid-template-columns: repeat(3, 1fr);
+        grid-auto-rows: 88px;
+      }
+      .cal-grid.months,
+      .cal-grid.years {
+        grid-template-columns: repeat(4, 1fr);
+        grid-auto-rows: 84px;
+      }
+      .cal-dow {
+        text-align: center;
+        font-size: 10px;
+        color: #949b8c;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        padding: 2px 0;
+      }
+      .cal-cell {
+        border: 1px solid #e7ecdf;
+        border-radius: 8px;
+        background: #fbfcf8;
+        height: 100%;
+        min-height: 0;
+        box-sizing: border-box;
+        padding: 8px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
         overflow: hidden;
       }
-      .period-table {
+      .cal-cell.empty {
+        background: transparent;
+        border-color: transparent;
+        visibility: hidden;
+      }
+      .cal-cell.active {
+        background: #eef5e6;
+        border-color: #c5d3b5;
+      }
+      .cal-cell.peak {
+        background: #e4efd8;
+        border-color: #9bb48a;
+      }
+      .cal-cell .d {
+        font-size: 11px;
+        color: #7a8371;
+        line-height: 1.25;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .cal-grid.weeks .cal-cell .d {
+        font-size: 10px;
+        letter-spacing: -0.15px;
+      }
+      .cal-cell .n {
+        font-size: 16px;
+        font-weight: 650;
+        letter-spacing: -0.4px;
+        color: #243019;
+      }
+      .cal-cell.zero .n {
+        color: #c0c7b6;
+        font-weight: 500;
+      }
+      .stats-page .heading {
+        margin-bottom: 18px;
+      }
+      .stats-page .heading h1 {
+        margin: 0 0 6px;
+      }
+      .top-repos {
+        list-style: none;
+        padding: 0;
+        margin: 14px 0 0;
+        display: grid;
+        gap: 8px;
+      }
+      .top-repos li {
+        display: grid;
+        grid-template-columns: 28px 1fr auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px 12px;
+        border: 1px solid #e7ecdf;
+        border-radius: 8px;
+        background: #fbfcf8;
+        cursor: pointer;
+      }
+      .top-repos li:hover {
+        background: #eef5e6;
+        border-color: #c5d3b5;
+      }
+      .top-repos .rank {
+        font-size: 12px;
+        color: #949b8c;
+        font-weight: 650;
+      }
+      .top-repos .name {
+        font-size: 13px;
+        font-weight: 650;
+        color: #243019;
+      }
+      .top-repos .count {
+        font-size: 14px;
+        font-weight: 650;
+        color: #4f6640;
+      }
+      .spark {
+        display: block;
+        width: 72px;
+        height: 22px;
+      }
+      .spark rect {
+        fill: #8fb07a;
+      }
+      .spark rect.zero {
+        fill: #d7ddcf;
+      }
+      .board-wrap {
+        overflow: auto;
+        margin-top: 8px;
+      }
+      .board-wrap table {
         width: 100%;
         border-collapse: collapse;
-        margin-top: 16px;
-        font-size: 13px;
       }
-      .period-table th,
-      .period-table td {
+      .board-wrap th,
+      .board-wrap td {
         text-align: left;
-        padding: 10px 8px;
+        padding: 10px 12px;
         border-bottom: 1px solid #eef1e8;
+        font-size: 13px;
+        white-space: nowrap;
       }
-      .period-table th {
-        color: #7a8371;
+      .board-wrap th {
         font-size: 11px;
-        font-weight: 600;
+        color: #7a8371;
+        font-weight: 650;
+        letter-spacing: 0.2px;
+      }
+      .board-wrap th.sortable {
+        cursor: pointer;
+        user-select: none;
+      }
+      .board-wrap th.sortable::after {
+        content: '';
+        margin-left: 4px;
+        opacity: 0.35;
+      }
+      .board-wrap th.sorted-asc::after {
+        content: '↑';
+        opacity: 1;
+      }
+      .board-wrap th.sorted-desc::after {
+        content: '↓';
+        opacity: 1;
+      }
+      .board-wrap tr.board-row {
+        cursor: pointer;
+      }
+      .board-wrap tr.board-row:hover {
+        background: #f6f9ef;
+      }
+      .board-wrap td.num {
+        font-variant-numeric: tabular-nums;
+        font-weight: 650;
+      }
+      .board-wrap td.muted {
+        color: #a0a894;
+        font-weight: 500;
       }
       .contrib-list,
       .lang-list {
@@ -509,10 +791,29 @@
         padding: 14px 22px;
         background: #fafbf7;
       }
+      th.sortable {
+        cursor: pointer;
+        user-select: none;
+      }
+      th.sortable:hover {
+        color: #5d704c;
+      }
+      th.sortable[aria-sort='ascending']::after {
+        content: ' ↑';
+      }
+      th.sortable[aria-sort='descending']::after {
+        content: ' ↓';
+      }
       td {
         padding: 21px 22px;
         border-top: 1px solid #edf0e7;
         font-size: 12px;
+      }
+      tr.repo-row {
+        cursor: pointer;
+      }
+      tr.repo-row:hover td {
+        background: #f5f7f0;
       }
       .repo-name {
         font-size: 14px;
@@ -894,6 +1195,10 @@
             <span>▦</span>
             Overview
           </button>
+          <button id="statsNav">
+            <span>▤</span>
+            Stats
+          </button>
           <button id="machinesNav">
             <span>▱</span>
             Machines
@@ -966,7 +1271,10 @@
               4 repositories · ~/Projects · Snapshot captured 4 Oct 2026
             </div>
           </div>
-          <button class="text-btn" id="connect">Connect companion</button>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="text-btn" id="connect">Connect companion</button>
+            <button class="text-btn" id="disconnect" hidden>Disconnect</button>
+          </div>
         </div>
         <div class="stats">
           <div class="stat">
@@ -1067,17 +1375,19 @@
           <div class="scroll">
             <table>
               <thead>
-                <tr>
-                  <th>Repository</th>
-                  <th>Branch</th>
-                  <th>Commits</th>
-                  <th>Last activity</th>
-                  <th>30d</th>
-                  <th>↓ Behind</th>
-                  <th>↑ Ahead</th>
-                  <th>Local changes</th>
-                  <th>Next step</th>
-                  <th></th>
+                <tr id="repoHead">
+                  <th class="sortable" data-sort="name">Repository</th>
+                  <th class="sortable" data-sort="branch">Branch</th>
+                  <th class="sortable" data-sort="first">First date</th>
+                  <th class="sortable" data-sort="age">Age (days)</th>
+                  <th class="sortable" data-sort="commits">Total commits</th>
+                  <th class="sortable" data-sort="d30">30d</th>
+                  <th class="sortable" data-sort="d7">7d</th>
+                  <th class="sortable" data-sort="last">Last activity</th>
+                  <th class="sortable" data-sort="behind">↓ Behind</th>
+                  <th class="sortable" data-sort="ahead">↑ Ahead</th>
+                  <th class="sortable" data-sort="dirty">Local changes</th>
+                  <th class="sortable" data-sort="next">Next step</th>
                 </tr>
               </thead>
               <tbody id="rows"></tbody>
@@ -1133,6 +1443,7 @@
         </footer>
         </div>
         <div id="detailView" class="detail-page" hidden></div>
+        <div id="statsView" class="stats-page" hidden></div>
       </main>
     </div>
     <div class="overlay" id="overlay">

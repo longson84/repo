@@ -136,6 +136,7 @@ class CompanionTests(unittest.TestCase):
         finally:
             api.git = original
         self.assertEqual(result["commitCount"], 2)
+        self.assertEqual(result["commits7d"], 2)
         self.assertEqual(result["contributorCount"], 1)
         self.assertEqual(result["topContributors"][0]["name"], "Test")
         self.assertEqual(result["branchCount"], 1)
@@ -149,8 +150,33 @@ class CompanionTests(unittest.TestCase):
         self.assertGreaterEqual(len(result["commitsByYear"]), 1)
         self.assertEqual(sum(item["commits"] for item in result["commitsByDay"]), 2)
         self.assertEqual(sum(item["commits"] for item in result["commitsByYear"]), 2)
+        self.assertIsInstance(result["commitsByDate"], dict)
+        self.assertEqual(sum(result["commitsByDate"].values()), 2)
+        self.assertIsNotNone(result["activitySummary"])
+        self.assertGreaterEqual(result["activitySummary"]["peakDayCommits"], 1)
+        self.assertIsNotNone(result["ageLabel"])
+        self.assertIsInstance(result["hotspotFiles"], list)
+        self.assertTrue(any(item["path"].endswith("app.py") for item in result["hotspotFiles"]))
+        self.assertIsInstance(result["largeBlobs"], list)
+        self.assertTrue(any(item.get("source") == "HEAD" for item in result["largeBlobs"]))
         self.assertIsNone(result["error"])
         self.assertNotIn("fetch", calls)
+
+    def test_activity_summary_marks_quiet_and_burst_weeks(self):
+        api = self.api()
+        series = {
+            "commitsByDay": [{"period": "2026-10-01", "commits": 5}],
+            "commitsByWeek": [
+                {"period": "2026-W39", "commits": 0},
+                {"period": "2026-W40", "commits": 8},
+                {"period": "2026-W41", "commits": 2},
+            ],
+        }
+        summary = api.activity_summary(series)
+        self.assertEqual(summary["peakWeekCommits"], 8)
+        self.assertEqual(summary["quietWeeks"], 1)
+        self.assertEqual(summary["activeWeeks"], 2)
+        self.assertEqual(summary["burstRatio"], 2.4)
 
     def test_commit_series_buckets_day_week_month_year(self):
         api = self.api()
@@ -203,9 +229,33 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual(len(cached), 1)
         self.assertEqual(cached[0]["path"], str(repo.resolve()))
 
+    def test_pairing_token_reuses_file_until_rotated(self):
+        api = self.api()
+        path = self.root / "pairing-token"
+        first = api.load_or_create_token(path)
+        second = api.load_or_create_token(path)
+        self.assertEqual(first, second)
+        self.assertEqual(path.read_text(encoding="utf-8").strip(), first)
+        rotated = api.load_or_create_token(path, rotate=True)
+        self.assertNotEqual(rotated, first)
+        self.assertEqual(api.load_or_create_token(path), rotated)
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_start_ui_server_serves_dist(self):
+        api = self.api()
+        dist = self.root / "dist"
+        dist.mkdir()
+        (dist / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+        ui = api.start_ui_server(dist, port=0)
+        self.assertIsNotNone(ui)
+        try:
+            port = ui.server_address[1]
+            import urllib.request
+
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/index.html") as response:
+                self.assertEqual(response.read().decode(), "<html>ok</html>")
+        finally:
+            ui.shutdown()
+            ui.server_close()
 
 
 class HttpBoundaryTests(unittest.TestCase):
@@ -287,3 +337,7 @@ class HttpBoundaryTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join()
+
+
+if __name__ == "__main__":
+    unittest.main()

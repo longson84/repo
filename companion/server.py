@@ -8,7 +8,8 @@ import argparse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from functools import partial
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
 import os
@@ -18,6 +19,7 @@ import socket
 import subprocess
 import threading
 from urllib.parse import urlparse
+import webbrowser
 
 ORIGINS = {
     "https://repo.theana.online",
@@ -25,6 +27,48 @@ ORIGINS = {
     "http://localhost:8766",
 }
 STATS_TTL_HOURS = 24
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CONFIG = REPO_ROOT / ".repo-local" / "settings.json"
+DEFAULT_TOKEN_FILE = REPO_ROOT / ".repo-local" / "pairing-token"
+DEFAULT_DIST = REPO_ROOT / "dist"
+
+
+def load_or_create_token(path, *, rotate=False):
+    """Stable pairing token in .repo-local; regenerate only when rotate=True."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rotate and path.is_file():
+        value = path.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+    value = secrets.token_urlsafe(32)
+    path.write_text(value + "\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return value
+
+
+def start_ui_server(directory, port=8766):
+    """Serve the dashboard static files on loopback; returns the server or None."""
+    directory = Path(directory)
+    if not directory.is_dir():
+        raise ValueError(f"UI directory not found: {directory}")
+
+    class QuietHandler(SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+    handler = partial(QuietHandler, directory=str(directory))
+    try:
+        httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    except OSError as error:
+        print(f"Could not start local UI on 127.0.0.1:{port}: {error}", flush=True)
+        return None
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return httpd
 
 
 def git(path, *args, timeout=35):
@@ -102,7 +146,193 @@ def commit_series(iso_dates, now=None):
         "commitsByWeek": _series(by_week, week_keys),
         "commitsByMonth": _series(by_month, month_keys),
         "commitsByYear": _series(by_year, year_keys),
+        "commitsByDate": dict(by_day),
     }
+
+
+def activity_summary(series):
+    """Bursts vs quiet periods from day/week commit series."""
+    days = series.get("commitsByDay") or []
+    weeks = series.get("commitsByWeek") or []
+    day_counts = [item.get("commits") or 0 for item in days]
+    week_counts = [item.get("commits") or 0 for item in weeks]
+    peak_day = max(day_counts) if day_counts else 0
+    peak_week = max(week_counts) if week_counts else 0
+    peak_day_period = next(
+        (item["period"] for item in days if (item.get("commits") or 0) == peak_day),
+        None,
+    )
+    peak_week_period = next(
+        (item["period"] for item in weeks if (item.get("commits") or 0) == peak_week),
+        None,
+    )
+    active_weeks = sum(1 for count in week_counts if count > 0)
+    quiet_weeks = sum(1 for count in week_counts if count == 0)
+    avg_week = (sum(week_counts) / len(week_counts)) if week_counts else 0.0
+    burst_ratio = round(peak_week / avg_week, 2) if avg_week else None
+    return {
+        "peakDayCommits": peak_day,
+        "peakDayPeriod": peak_day_period,
+        "peakWeekCommits": peak_week,
+        "peakWeekPeriod": peak_week_period,
+        "activeWeeks": active_weeks,
+        "quietWeeks": quiet_weeks,
+        "avgWeekCommits": round(avg_week, 1),
+        "burstRatio": burst_ratio,
+    }
+
+
+def age_stats(first_iso, last_iso, now=None):
+    now = now or datetime.now(timezone.utc)
+
+    def parse(value):
+        if not value:
+            return None
+        try:
+            stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return stamp.astimezone(timezone.utc)
+
+    first = parse(first_iso)
+    last = parse(last_iso) or now
+    if not first:
+        return {"ageDays": None, "ageLabel": None, "lifespanDays": None}
+    age_days = max(0, (now.date() - first.date()).days)
+    lifespan_days = max(0, (last.date() - first.date()).days)
+    years, rem = divmod(age_days, 365)
+    months = rem // 30
+    if years:
+        label = f"{years}y {months}mo"
+    elif months:
+        label = f"{months}mo"
+    else:
+        label = f"{age_days}d"
+    return {
+        "ageDays": age_days,
+        "ageLabel": label,
+        "lifespanDays": lifespan_days,
+    }
+
+
+def collect_hotspots(path):
+    text = git_soft(
+        path,
+        "log",
+        "--name-only",
+        "--pretty=format:",
+        "--since=18.months",
+        "HEAD",
+        timeout=120,
+    )
+    if text is None:
+        text = git_soft(
+            path,
+            "log",
+            "--name-only",
+            "--pretty=format:",
+            "-n",
+            "3000",
+            "HEAD",
+            timeout=120,
+        )
+    if text is None:
+        return None
+    files = Counter()
+    dirs = Counter()
+    for line in text.splitlines():
+        relative = line.strip()
+        if not relative:
+            continue
+        files[relative] += 1
+        dirs[relative.split("/", 1)[0]] += 1
+    return {
+        "hotspotFiles": [
+            {"path": name, "commits": count} for name, count in files.most_common(15)
+        ],
+        "hotspotDirs": [
+            {"name": name, "commits": count} for name, count in dirs.most_common(10)
+        ],
+    }
+
+
+def collect_large_blobs(path):
+    """Largest files in HEAD plus largest blob objects in pack history."""
+    items = []
+    tree = git_soft(path, "ls-tree", "-r", "-l", "HEAD", timeout=90)
+    if tree is not None:
+        for line in tree.splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) != 2:
+                continue
+            meta, relative = parts
+            bits = meta.split()
+            if len(bits) < 4 or bits[1] != "blob":
+                continue
+            try:
+                size = int(bits[3])
+            except ValueError:
+                continue
+            items.append(
+                {
+                    "path": relative,
+                    "bytes": size,
+                    "sha": bits[2][:12],
+                    "source": "HEAD",
+                }
+            )
+
+    sha_paths = {}
+    objects = git_soft(path, "rev-list", "--objects", "--all", timeout=120)
+    if objects is not None:
+        for line in objects.splitlines():
+            bits = line.split(" ", 1)
+            if len(bits) == 2 and bits[1]:
+                sha_paths[bits[0]] = bits[1]
+
+    pack_dir = Path(path) / ".git" / "objects" / "pack"
+    pack_sizes = {}
+    if pack_dir.is_dir():
+        for index in pack_dir.glob("*.idx"):
+            verified = git_soft(path, "verify-pack", "-v", str(index), timeout=90)
+            if not verified:
+                continue
+            for line in verified.splitlines():
+                bits = line.split()
+                if len(bits) >= 3 and bits[1] == "blob":
+                    try:
+                        pack_sizes[bits[0]] = int(bits[2])
+                    except ValueError:
+                        pass
+
+    for sha, size in sorted(pack_sizes.items(), key=lambda item: item[1], reverse=True)[
+        :40
+    ]:
+        relative = sha_paths.get(sha)
+        items.append(
+            {
+                "path": relative or sha[:12],
+                "bytes": size,
+                "sha": sha[:12],
+                "source": "history",
+            }
+        )
+
+    # Prefer largest unique paths; keep HEAD and history distinct when same path.
+    items.sort(key=lambda item: item["bytes"], reverse=True)
+    seen = set()
+    unique = []
+    for item in items:
+        key = (item["source"], item["path"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+        if len(unique) >= 15:
+            break
+    return unique
 
 
 def authorized(host, origin, authorization, token, port):
@@ -200,6 +430,7 @@ def collect_stats(path):
         lastCommitAt=None,
         lastCommitAuthor=None,
         lastCommitSubject=None,
+        commits7d=None,
         commits30d=None,
         commits90d=None,
         weeklyCommits=None,
@@ -216,6 +447,14 @@ def collect_stats(path):
         commitsByWeek=None,
         commitsByMonth=None,
         commitsByYear=None,
+        commitsByDate=None,
+        activitySummary=None,
+        ageDays=None,
+        ageLabel=None,
+        lifespanDays=None,
+        hotspotFiles=None,
+        hotspotDirs=None,
+        largeBlobs=None,
         error=None,
     )
     errors = []
@@ -258,8 +497,13 @@ def collect_stats(path):
     else:
         note("first commit")
 
+    c7 = git_soft(path, "rev-list", "--count", "--since=7.days", "HEAD")
     c30 = git_soft(path, "rev-list", "--count", "--since=30.days", "HEAD")
     c90 = git_soft(path, "rev-list", "--count", "--since=90.days", "HEAD")
+    if c7 is not None and c7.isdigit():
+        result["commits7d"] = int(c7)
+    else:
+        note("commits 7d")
     if c30 is not None and c30.isdigit():
         result["commits30d"] = int(c30)
     else:
@@ -277,9 +521,14 @@ def collect_stats(path):
         result["weeklyCommits"] = [
             week_map.get(item["period"], 0) for item in series["commitsByWeek"][-12:]
         ]
+        result["activitySummary"] = activity_summary(series)
     else:
         note("commit timeline")
         note("weekly commits")
+        note("activity summary")
+
+    age = age_stats(result.get("firstCommitAt"), result.get("lastCommitAt"), now=now)
+    result.update(age)
 
     shortlog = git_soft(path, "shortlog", "-sn", "HEAD", timeout=60)
     if shortlog is not None:
@@ -369,6 +618,17 @@ def collect_stats(path):
     else:
         note("churn")
 
+    hotspots = collect_hotspots(path)
+    if hotspots is not None:
+        result.update(hotspots)
+    else:
+        note("hotspots")
+
+    try:
+        result["largeBlobs"] = collect_large_blobs(path)
+    except (OSError, ValueError, TypeError):
+        note("large blobs")
+
     if errors:
         result["error"] = "Partial stats: could not read " + ", ".join(errors) + "."
     return result
@@ -380,6 +640,18 @@ def stats_fresh(cached, path):
     for key in ("commitsByDay", "commitsByWeek", "commitsByMonth", "commitsByYear"):
         if not isinstance(cached.get(key), list):
             return False
+    if not isinstance(cached.get("commitsByDate"), dict):
+        return False
+    if not isinstance(cached.get("activitySummary"), dict):
+        return False
+    if not isinstance(cached.get("hotspotFiles"), list):
+        return False
+    if not isinstance(cached.get("largeBlobs"), list):
+        return False
+    if cached.get("ageDays") is None and cached.get("firstCommitAt"):
+        return False
+    if cached.get("commits7d") is None and cached.get("commitCount") is not None:
+        return False
     head = git_soft(path, "rev-parse", "--short", "HEAD")
     if not head or cached.get("head") != head:
         return False
@@ -661,25 +933,75 @@ def main():
     parser.add_argument("--port", type=int, default=48731)
     parser.add_argument(
         "--config",
-        default=str(
-            Path(__file__).resolve().parents[1] / ".repo-local" / "settings.json"
-        ),
+        default=str(DEFAULT_CONFIG),
+    )
+    parser.add_argument(
+        "--token-file",
+        default=str(DEFAULT_TOKEN_FILE),
+        help="File that stores the stable pairing token (default: .repo-local/pairing-token).",
+    )
+    parser.add_argument(
+        "--new-token",
+        action="store_true",
+        help="Replace the saved pairing token (forces browsers to reconnect).",
+    )
+    parser.add_argument(
+        "--ui",
+        action="store_true",
+        help="Serve dist/ on the UI port, open the local dashboard, and auto-pair.",
+    )
+    parser.add_argument("--ui-port", type=int, default=8766)
+    parser.add_argument(
+        "--dist",
+        default=str(DEFAULT_DIST),
+        help="Dashboard directory to serve with --ui.",
     )
     args = parser.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    except OSError as error:
+        raise SystemExit(
+            f"Companion port 127.0.0.1:{args.port} is already in use ({error}).\n"
+            f"Stop the other process, e.g. "
+            f"`lsof -nP -iTCP:{args.port} -sTCP:LISTEN` then `kill <pid>`, "
+            f"or pass a free --port."
+        ) from error
     server.state = State(args.root, args.config)
-    server.token = secrets.token_urlsafe(32)
+    server.token = load_or_create_token(args.token_file, rotate=args.new_token)
     print(f"Repo companion: http://127.0.0.1:{args.port}", flush=True)
     print(f"Pairing token: {server.token}", flush=True)
-    print(
-        "Open https://repo.theana.online and paste this token in Connect companion.",
-        flush=True,
-    )
+    print(f"Token file: {args.token_file}", flush=True)
+    ui = None
+    if args.ui:
+        ui = start_ui_server(args.dist, args.ui_port)
+        if ui:
+            ui_url = f"http://127.0.0.1:{args.ui_port}/?pair={server.token}"
+            print(f"Local dashboard: http://127.0.0.1:{args.ui_port}", flush=True)
+            print("Opening the paired local dashboard…", flush=True)
+            try:
+                webbrowser.open(ui_url)
+            except Exception as error:  # pragma: no cover - host dependent
+                print(f"Open this URL manually: {ui_url} ({error})", flush=True)
+        else:
+            print(
+                "UI server unavailable; paste the token at https://repo.theana.online "
+                "or free the UI port and restart with --ui.",
+                flush=True,
+            )
+    else:
+        print(
+            "Open https://repo.theana.online and paste this token, or restart with --ui "
+            "for the local dashboard.",
+            flush=True,
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        if ui:
+            ui.shutdown()
+            ui.server_close()
         server.server_close()
 
 

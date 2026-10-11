@@ -19,14 +19,58 @@ let repos = [],
   statsBusy = false,
   statsByPath = {},
   detailPath = null,
-  detailPeriod = 'day';
+  detailPeriod = 'day',
+  detailCursor = null,
+  statsPeriod = 'day',
+  statsCursor = null,
+  boardSortKey = 'commits30d',
+  boardSortDir = -1,
+  sortKey = 'name',
+  sortDir = 1;
 const base = 'http://127.0.0.1:48731';
-const PERIOD_KEYS = {
-  day: 'commitsByDay',
-  week: 'commitsByWeek',
-  month: 'commitsByMonth',
-  year: 'commitsByYear',
-};
+const TOKEN_KEY = 'repo.companion.token';
+function readStoredToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+function writeStoredToken(value) {
+  try {
+    if (value) localStorage.setItem(TOKEN_KEY, value);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* private mode */
+  }
+}
+function clearPairing() {
+  token = '';
+  paired = false;
+  machineName = 'This machine';
+  roots = [];
+  paths = [];
+  repos = [];
+  scannedAt = null;
+  statsByPath = {};
+  writeStoredToken('');
+}
+async function pairWithToken(candidate) {
+  const previous = token;
+  token = candidate;
+  try {
+    const result = await api('status');
+    paired = true;
+    machineName = result.machine;
+    roots = result.roots;
+    paths = result.paths;
+    writeStoredToken(candidate);
+    return result;
+  } catch (error) {
+    token = previous;
+    throw error;
+  }
+}
 async function api(path, body) {
   const controller = new AbortController();
   const long = path === 'scan' || (path === 'stats' && body);
@@ -76,6 +120,66 @@ function relativeTime(iso) {
   const days = Math.round(hours / 24);
   if (days < 60) return days + 'd ago';
   return new Date(iso).toLocaleDateString();
+}
+function formatDate(iso) {
+  if (!iso) return '—';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '—';
+  const dd = String(date.getDate()).padStart(2, '0');
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const yy = String(date.getFullYear()).slice(-2);
+  return `${dd}/${mm}/${yy}`;
+}
+function sortValue(r, key) {
+  const s = statsByPath[r.path] || {};
+  switch (key) {
+    case 'name':
+      return (r.name || '').toLowerCase();
+    case 'branch':
+      return (r.branch || '').toLowerCase();
+    case 'first':
+      return s.firstCommitAt ? new Date(s.firstCommitAt).getTime() : null;
+    case 'age':
+      return s.ageDays ?? null;
+    case 'commits':
+      return s.commitCount ?? null;
+    case 'd30':
+      return s.commits30d ?? null;
+    case 'd7':
+      return s.commits7d ?? null;
+    case 'last':
+      return s.lastCommitAt ? new Date(s.lastCommitAt).getTime() : null;
+    case 'behind':
+      return r.behind ?? null;
+    case 'ahead':
+      return r.ahead ?? null;
+    case 'dirty':
+      return (r.modified || 0) + (r.untracked || 0);
+    case 'next':
+      return next(r).toLowerCase();
+    default:
+      return null;
+  }
+}
+function compareSort(a, b) {
+  const left = sortValue(a, sortKey);
+  const right = sortValue(b, sortKey);
+  if (left == null && right == null) return a.name.localeCompare(b.name);
+  if (left == null) return 1;
+  if (right == null) return -1;
+  if (typeof left === 'string' || typeof right === 'string') {
+    return String(left).localeCompare(String(right)) * sortDir || a.name.localeCompare(b.name);
+  }
+  return (left < right ? -1 : left > right ? 1 : 0) * sortDir || a.name.localeCompare(b.name);
+}
+function paintSortHeaders() {
+  document.querySelectorAll('#repoHead th.sortable').forEach((th) => {
+    const active = th.dataset.sort === sortKey;
+    th.setAttribute(
+      'aria-sort',
+      active ? (sortDir > 0 ? 'ascending' : 'descending') : 'none',
+    );
+  });
 }
 function sparkline(weeks) {
   const values = Array.isArray(weeks) ? weeks : [];
@@ -165,37 +269,42 @@ function render() {
   const other = $('machine').value === 'other';
   const list = other
     ? []
-    : repos.filter(
-        (r) =>
-          r.name.toLowerCase().includes($('search').value.toLowerCase()) &&
-          (filter === 'all' ||
-            (filter === 'behind' && r.behind > 0) ||
-            (filter === 'ahead' && r.ahead > 0) ||
-            (filter === 'dirty' && r.modified + r.untracked > 0)),
-      );
+    : repos
+        .filter(
+          (r) =>
+            r.name.toLowerCase().includes($('search').value.toLowerCase()) &&
+            (filter === 'all' ||
+              (filter === 'behind' && r.behind > 0) ||
+              (filter === 'ahead' && r.ahead > 0) ||
+              (filter === 'dirty' && r.modified + r.untracked > 0)),
+        )
+        .sort(compareSort);
+  paintSortHeaders();
   $('rows').innerHTML = list
     .map((r) => {
       const s = statsByPath[r.path];
+      const dirty = (r.modified || 0) + (r.untracked || 0);
       return /* HTML */ `
-        <tr>
+        <tr class="repo-row" data-path="${esc(r.path)}" tabindex="0">
           <td>
-            <button
-              class="repo-name"
-              data-path="${esc(r.path)}"
-              style="border:0;background:transparent;padding:0;text-align:left;cursor:pointer;color:inherit;font:inherit"
-            >
-              ${esc(r.name)}
-            </button>
+            <span class="repo-name">${esc(r.name)}</span>
             <span class="repo-path">${esc(r.path)}</span>
           </td>
           <td><span class="branch">⑂ ${esc(r.branch || 'Unknown')}</span></td>
+          <td>${esc(formatDate(s?.firstCommitAt))}</td>
+          <td>
+            <span class="count ${s?.ageDays != null ? '' : 'zero'}">${s?.ageDays ?? '—'}</span>
+          </td>
           <td>
             <span class="count ${s?.commitCount ? '' : 'zero'}">${s?.commitCount ?? '—'}</span>
           </td>
-          <td>${esc(relativeTime(s?.lastCommitAt))}</td>
           <td>
             <span class="count ${s?.commits30d ? '' : 'zero'}">${s?.commits30d ?? '—'}</span>
           </td>
+          <td>
+            <span class="count ${s?.commits7d ? '' : 'zero'}">${s?.commits7d ?? '—'}</span>
+          </td>
+          <td>${esc(formatDate(s?.lastCommitAt))}</td>
           <td>
             <span class="count ${r.behind ? 'behind' : 'zero'}">${r.behind ?? '?'}</span>
           </td>
@@ -203,17 +312,12 @@ function render() {
             <span class="count ${r.ahead ? 'ahead' : 'zero'}">${r.ahead ?? '?'}</span>
           </td>
           <td>
-            ${r.modified + r.untracked
-              ? `${r.modified + r.untracked} ${r.modified + r.untracked === 1 ? 'file' : 'files'}`
-              : '✓ Clean'}
+            ${dirty ? `${dirty} ${dirty === 1 ? 'file' : 'files'}` : '✓ Clean'}
           </td>
           <td>
             <span class="badge ${eligible(r) || next(r) === 'Up to date' ? 'pull' : 'review'}">
               ${esc(next(r))}
             </span>
-          </td>
-          <td>
-            <button class="row-btn" data-path="${esc(r.path)}">Open →</button>
           </td>
         </tr>
       `;
@@ -270,7 +374,7 @@ function render() {
     ? 'No report received'
     : paired
       ? `${paths.length} tracked repos · ${scannedAt ? 'Scanned ' + new Date(scannedAt).toLocaleString() : 'Not scanned yet'}`
-      : 'Start your companion, then connect with its pairing token.';
+      : 'Run companion with --ui, or connect with a pairing token.';
   $('snapshotLabel').textContent =
     scannedAt && !other
       ? 'Compared with each branch’s upstream · ' + new Date(scannedAt).toLocaleString()
@@ -280,27 +384,50 @@ function render() {
   $('sync').disabled = other || !scannedAt || busy || statsBusy;
   $('manage').disabled = other || !paired || busy || statsBusy;
   $('connect').textContent = paired ? 'Connection settings' : 'Connect companion';
+  if ($('disconnect')) $('disconnect').hidden = !paired;
   $('scan').innerHTML = busy ? 'Scanning…' : '<span class="arrow">⟳</span> Scan this machine';
   $('currentMachineNav').textContent = machineName;
   $('currentMachineState').textContent = paired ? 'Companion connected' : 'Not connected';
   $('nextTitle').textContent = `${repos.filter(eligible).length} repositories can receive updates`;
   $('nextText').textContent =
     'Review the eligible branches and the reasons other repositories need attention. This version previews updates; it does not pull or push.';
-  const onDetail = detailPath && !other;
-  $('overviewView').hidden = !!onDetail;
+  const route = parseRoute();
+  const onDetail = route.view === 'repo' && !other;
+  const onStats = route.view === 'stats' && !other;
+  $('overviewView').hidden = onDetail || onStats;
   $('detailView').hidden = !onDetail;
+  $('statsView').hidden = !onStats;
+  document.querySelectorAll('.nav button').forEach((button) => {
+    button.classList.toggle(
+      'active',
+      (button.id === 'overviewNav' && route.view === 'overview') ||
+        (button.id === 'statsNav' && route.view === 'stats'),
+    );
+  });
   if (onDetail) {
+    detailPath = route.path;
     paintDetail();
     $('crumb').innerHTML = `Theana <span style="padding:0 10px">/</span> <a href="#/" style="color:inherit">Repositories</a> <span style="padding:0 10px">/</span> <b>${esc(
       (repos.find((r) => r.path === detailPath) || statsByPath[detailPath] || { name: detailPath.split(/[\\/]/).pop() }).name,
     )}</b>`;
+  } else if (onStats) {
+    paintStats();
+    $('crumb').innerHTML =
+      'Theana <span style="padding:0 10px">/</span> <a href="#/" style="color:inherit">Repositories</a> <span style="padding:0 10px">/</span> <b>Stats</b>';
   } else {
+    detailPath = null;
     $('crumb').innerHTML =
       'Theana <span style="padding: 0 10px">/</span> <b>Repository workspace</b>';
   }
-  document
-    .querySelectorAll('[data-path]')
-    .forEach((b) => (b.onclick = () => openRepo(b.dataset.path)));
+  document.querySelectorAll('tr.repo-row').forEach((row) => {
+    row.onclick = () => openRepo(row.dataset.path);
+    row.onkeydown = (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openRepo(row.dataset.path);
+      }
+    };
+  });
 }
 function cells(pairs) {
   return pairs
@@ -314,42 +441,251 @@ function cells(pairs) {
     )
     .join('');
 }
-function parseHash() {
+function parseRoute() {
   const raw = location.hash.replace(/^#/, '');
   if (raw.startsWith('/repo?')) {
-    return decodeURIComponent(raw.slice('/repo?'.length));
+    return { view: 'repo', path: decodeURIComponent(raw.slice('/repo?'.length)) };
   }
-  return null;
+  if (raw === '/stats' || raw.startsWith('/stats?')) return { view: 'stats' };
+  return { view: 'overview' };
+}
+function parseHash() {
+  const route = parseRoute();
+  return route.view === 'repo' ? route.path : null;
 }
 function openRepo(path) {
   if (!path) return;
   detailPeriod = 'day';
+  detailCursor = null;
   location.hash = '#/repo?' + encodeURIComponent(path);
 }
 function closeRepo() {
   location.hash = '#/';
 }
-function barChart(series) {
-  const values = Array.isArray(series) ? series : [];
-  const max = Math.max(1, ...values.map((item) => item.commits || 0));
-  if (!values.length) {
-    return '<p class="note">No commit timeline in cache yet.</p>';
+function openStats() {
+  location.hash = '#/stats';
+}
+function dateKey(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+function mondayOf(date) {
+  const value = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const day = (value.getDay() + 6) % 7;
+  value.setDate(value.getDate() - day);
+  return value;
+}
+function isoWeekKey(date) {
+  const utc = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const day = utc.getUTCDay() || 7;
+  utc.setUTCDate(utc.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(utc.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((utc - yearStart) / 86400000 + 1) / 7);
+  return `${utc.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+function monthKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+function commitsOnDay(map, date) {
+  return map[dateKey(date)] || 0;
+}
+function sumRange(map, start, days) {
+  let total = 0;
+  for (let i = 0; i < days; i += 1) {
+    const day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    total += commitsOnDay(map, day);
   }
+  return total;
+}
+function defaultCursor(period, stats) {
+  const now = new Date();
+  if (period === 'day') return new Date(now.getFullYear(), now.getMonth(), 1);
+  if (period === 'week') return mondayOf(now);
+  if (period === 'month') return new Date(now.getFullYear(), 0, 1);
+  const years = Object.keys(stats?.commitsByDate || {})
+    .map((key) => Number(key.slice(0, 4)))
+    .filter((year) => !Number.isNaN(year));
+  const latest = years.length ? Math.max(...years) : now.getFullYear();
+  return new Date(latest - (latest % 12), 0, 1);
+}
+function ensureCursor(stats) {
+  if (!detailCursor) detailCursor = defaultCursor(detailPeriod, stats);
+  return detailCursor;
+}
+function ensureStatsCursor(stats) {
+  if (!statsCursor) statsCursor = defaultCursor(statsPeriod, stats);
+  return statsCursor;
+}
+function shiftCursor(delta) {
+  const cursor = detailCursor || new Date();
+  if (detailPeriod === 'day') {
+    detailCursor = new Date(cursor.getFullYear(), cursor.getMonth() + delta, 1);
+  } else if (detailPeriod === 'week') {
+    detailCursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + delta * 7 * 12);
+  } else if (detailPeriod === 'month') {
+    detailCursor = new Date(cursor.getFullYear() + delta, 0, 1);
+  } else {
+    detailCursor = new Date(cursor.getFullYear() + delta * 12, 0, 1);
+  }
+}
+function shiftStatsCursor(delta) {
+  const cursor = statsCursor || new Date();
+  if (statsPeriod === 'day') {
+    statsCursor = new Date(cursor.getFullYear(), cursor.getMonth() + delta, 1);
+  } else if (statsPeriod === 'week') {
+    statsCursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + delta * 7 * 12);
+  } else {
+    statsCursor = new Date(cursor.getFullYear() + delta, 0, 1);
+  }
+}
+function weekCode(start) {
+  return isoWeekKey(start).replace(/^(\d{4})-W(\d{2})$/, (_, y, w) => `W${w}/${y.slice(-2)}`);
+}
+function shortDay(date) {
+  const dd = String(date.getDate()).padStart(2, '0');
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  return `${dd}/${mm}`;
+}
+function weekRangeDates(start, { withYear = true } = {}) {
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
+  if (!withYear) return `${shortDay(start)}-${shortDay(end)}`;
+  return `${formatDate(dateKey(start) + 'T12:00:00')} – ${formatDate(dateKey(end) + 'T12:00:00')}`;
+}
+function weekLabel(start, { withYear = false } = {}) {
+  return `${weekCode(start)} (${weekRangeDates(start, { withYear })})`;
+}
+function periodLabel(period, start, mode = detailPeriod) {
+  if (start && (mode === 'week' || /W\d{2}/.test(String(period)))) {
+    return weekLabel(start);
+  }
+  if (mode === 'day' || /^\d{4}-\d{2}-\d{2}$/.test(period)) {
+    return formatDate(String(period) + 'T12:00:00');
+  }
+  if (mode === 'week' || /W\d{2}$/.test(period)) {
+    return String(period).replace(/^(\d{4})-W(\d{2})$/, (_, y, w) => `W${w}/${y.slice(-2)}`);
+  }
+  if (mode === 'month' || /^\d{4}-\d{2}$/.test(period)) {
+    const [y, m] = String(period).split('-');
+    return y && m ? `${m}/${y.slice(-2)}` : period;
+  }
+  return String(period);
+}
+function shouldLabel(index, total, mode = detailPeriod) {
+  if (total <= 14) return true;
+  if (mode === 'day') return index % 5 === 0 || index === total - 1;
+  if (mode === 'month') return index % 2 === 0 || index === total - 1;
+  return true;
+}
+function axisLabel(item, index, total, mode = detailPeriod) {
+  if (!shouldLabel(index, total, mode)) return '';
+  if (mode === 'week' && item.start) {
+    return `<i>${esc(weekLabel(item.start))}</i>`;
+  }
+  return `<i>${esc(periodLabel(item.period, item.start, mode))}</i>`;
+}
+function seriesForView(map, mode = detailPeriod, cursor) {
+  const active =
+    cursor ||
+    (mode === detailPeriod
+      ? ensureCursor({ commitsByDate: map })
+      : ensureStatsCursor({ commitsByDate: map }));
+  if (mode === 'day') {
+    const year = active.getFullYear();
+    const month = active.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    return Array.from({ length: days }, (_, i) => {
+      const date = new Date(year, month, i + 1);
+      return { period: dateKey(date), commits: commitsOnDay(map, date) };
+    });
+  }
+  if (mode === 'week') {
+    const end = mondayOf(active);
+    return Array.from({ length: 12 }, (_, i) => {
+      const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - (11 - i) * 7);
+      return { period: isoWeekKey(start), commits: sumRange(map, start, 7), start };
+    });
+  }
+  if (mode === 'month') {
+    const year = active.getFullYear();
+    return Array.from({ length: 12 }, (_, i) => {
+      const start = new Date(year, i, 1);
+      const days = new Date(year, i + 1, 0).getDate();
+      return { period: monthKey(start), commits: sumRange(map, start, days) };
+    });
+  }
+  const startYear = active.getFullYear();
+  return Array.from({ length: 12 }, (_, i) => {
+    const year = startYear + i;
+    let commits = 0;
+    Object.entries(map).forEach(([key, count]) => {
+      if (key.startsWith(String(year))) commits += count;
+    });
+    return { period: String(year), commits };
+  });
+}
+function calendarTitle(cursor, mode = detailPeriod) {
+  if (mode === 'day') {
+    return cursor.toLocaleString(undefined, { month: 'long', year: 'numeric' });
+  }
+  if (mode === 'week') {
+    const end = mondayOf(cursor);
+    const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 11 * 7);
+    return `${weekLabel(start, { withYear: true })} → ${weekLabel(end, { withYear: true })}`;
+  }
+  if (mode === 'month') return String(cursor.getFullYear());
+  return `${cursor.getFullYear()} – ${cursor.getFullYear() + 11}`;
+}
+function calendarGrid(map, series) {
+  const peak = Math.max(0, ...series.map((item) => item.commits || 0));
+  if (detailPeriod === 'day') {
+    const cursor = ensureCursor({ commitsByDate: map });
+    const year = cursor.getFullYear();
+    const month = cursor.getMonth();
+    const first = new Date(year, month, 1);
+    const startPad = (first.getDay() + 6) % 7;
+    const days = new Date(year, month + 1, 0).getDate();
+    const heads = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+      .map((day) => `<div class="cal-dow">${day}</div>`)
+      .join('');
+    const cells = [];
+    for (let i = 0; i < startPad; i += 1) cells.push('<div class="cal-cell empty"></div>');
+    for (let day = 1; day <= days; day += 1) {
+      const date = new Date(year, month, day);
+      const commits = commitsOnDay(map, date);
+      cells.push(/* HTML */ `
+        <div
+          class="cal-cell ${commits ? 'active' : 'zero'} ${commits && commits === peak ? 'peak' : ''}"
+          title="${esc(formatDate(dateKey(date) + 'T12:00:00'))}: ${esc(commits)}"
+        >
+          <span class="d">${esc(day)}</span>
+          <span class="n">${esc(commits)}</span>
+        </div>
+      `);
+    }
+    return /* HTML */ `
+      <div class="cal-dow-row">${heads}</div>
+      <div class="cal-grid days">${cells.join('')}</div>
+    `;
+  }
+  const cls = detailPeriod === 'week' ? 'weeks' : detailPeriod === 'month' ? 'months' : 'years';
   return /* HTML */ `
-    <div class="bar-chart" role="img" aria-label="Commit counts">
-      ${values
+    <div class="cal-grid ${cls}">
+      ${series
         .map((item) => {
-          const height = Math.max(2, Math.round(((item.commits || 0) / max) * 110));
+          const commits = item.commits || 0;
           const label =
-            detailPeriod === 'day'
-              ? String(item.period).slice(5)
-              : detailPeriod === 'year'
-                ? String(item.period)
-                : String(item.period).replace(/^\d{4}-/, '');
+            detailPeriod === 'week' && item.start
+              ? weekLabel(item.start)
+              : periodLabel(item.period, item.start);
           return /* HTML */ `
-            <div class="bar" title="${esc(item.period)}: ${esc(item.commits)}">
-              <i style="height:${height}px"></i>
-              <span>${esc(label)}</span>
+            <div
+              class="cal-cell ${commits ? 'active' : 'zero'} ${commits && commits === peak ? 'peak' : ''}"
+              title="${esc(label)}: ${esc(commits)}"
+            >
+              <span class="d">${esc(label)}</span>
+              <span class="n">${esc(commits)}</span>
             </div>
           `;
         })
@@ -357,34 +693,339 @@ function barChart(series) {
     </div>
   `;
 }
-function periodTable(series) {
-  const values = Array.isArray(series) ? series : [];
-  const rows = [...values].reverse().filter((item) => (item.commits || 0) > 0);
-  if (!rows.length) {
-    return '<p class="note">No commits in this range.</p>';
+function timelineChart(map, series, mode, extraMeta = '') {
+  if (!series.length) {
+    return '<p class="note">No commit timeline in cache yet. Load or refresh portfolio stats.</p>';
   }
+  const counts = series.map((item) => item.commits || 0);
+  const max = Math.max(1, ...counts);
+  const total = counts.reduce((sum, n) => sum + n, 0);
+  const active = counts.filter((n) => n > 0).length;
+  const peak = Math.max(...counts);
+  const mid = Math.round(max / 2);
+  const bars = series
+    .map((item, index) => {
+      const commits = item.commits || 0;
+      const height = commits ? Math.max(8, Math.round((commits / max) * 170)) : 2;
+      const label = axisLabel(item, index, series.length, mode);
+      const tip = `${periodLabel(item.period, item.start, mode)} · ${commits} commit${commits === 1 ? '' : 's'}`;
+      return /* HTML */ `
+        <div
+          class="timeline-bar ${commits ? '' : 'zero'} ${commits === peak && peak ? 'peak' : ''}"
+          title="${esc(tip)}"
+        >
+          ${commits ? `<em>${esc(commits)}</em>` : ''}
+          <b style="height:${height}px"></b>
+          ${label ? `<span>${label}</span>` : ''}
+        </div>
+      `;
+    })
+    .join('');
   return /* HTML */ `
-    <table class="period-table">
-      <thead>
-        <tr>
-          <th>Period</th>
-          <th>Commits</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows
-          .map(
-            (item) => /* HTML */ `
-              <tr>
-                <td>${esc(item.period)}</td>
-                <td>${esc(item.commits)}</td>
-              </tr>
-            `,
-          )
-          .join('')}
-      </tbody>
-    </table>
+    <div class="timeline-panel">
+      <div class="timeline-meta">
+        <span>In view <strong>${esc(total)}</strong></span>
+        <span>Active <strong>${esc(active)}/${esc(series.length)}</strong></span>
+        <span>Peak <strong>${esc(peak)}</strong></span>
+        ${extraMeta}
+      </div>
+      <div class="timeline-chart" role="img" aria-label="Commit timeline">
+        <div class="timeline-y">
+          <span>${esc(max)}</span>
+          <span>${esc(mid)}</span>
+          <span>0</span>
+        </div>
+        <div class="timeline-plot count-${esc(series.length)}">${bars}</div>
+      </div>
+    </div>
   `;
+}
+function timelineViz(stats) {
+  const map = stats?.commitsByDate || {};
+  if (!Object.keys(map).length) {
+    return '<p class="note">No commit timeline in cache yet. Refresh stats.</p>';
+  }
+  const cursor = ensureCursor(stats);
+  const series = seriesForView(map, detailPeriod, cursor);
+  return /* HTML */ `
+    ${timelineChart(map, series, detailPeriod)}
+    <div class="cal-nav">
+      <button class="btn" id="calPrev">← Prev</button>
+      <h3>${esc(calendarTitle(cursor, detailPeriod))}</h3>
+      <button class="btn" id="calNext">Next →</button>
+    </div>
+    ${calendarGrid(map, series)}
+  `;
+}
+function mergedCommitsByDate() {
+  const map = {};
+  paths.forEach((path) => {
+    const byDate = statsByPath[path]?.commitsByDate || {};
+    Object.entries(byDate).forEach(([day, count]) => {
+      map[day] = (map[day] || 0) + (count || 0);
+    });
+  });
+  return map;
+}
+function commitsInBucket(map, item, mode) {
+  if (mode === 'day') return map[item.period] || 0;
+  if (mode === 'week' && item.start) return sumRange(map, item.start, 7);
+  if (mode === 'month' && /^\d{4}-\d{2}$/.test(item.period)) {
+    const [y, m] = item.period.split('-').map(Number);
+    const start = new Date(y, m - 1, 1);
+    return sumRange(map, start, new Date(y, m, 0).getDate());
+  }
+  return 0;
+}
+function topReposForSeries(series, mode, limit = 5) {
+  return paths
+    .map((path) => {
+      const s = statsByPath[path];
+      const map = s?.commitsByDate || {};
+      const commits = series.reduce((sum, item) => sum + commitsInBucket(map, item, mode), 0);
+      return {
+        path,
+        name: s?.name || path.split(/[\\/]/).pop(),
+        commits,
+      };
+    })
+    .filter((row) => row.commits > 0)
+    .sort((a, b) => b.commits - a.commits || a.name.localeCompare(b.name))
+    .slice(0, limit);
+}
+function sparkline(map, days = 30) {
+  const now = new Date();
+  const values = Array.from({ length: days }, (_, i) => {
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1 - i));
+    return commitsOnDay(map, date);
+  });
+  const peak = Math.max(1, ...values);
+  const width = 72;
+  const height = 22;
+  const gap = 1;
+  const bar = Math.max(1, (width - gap * (days - 1)) / days);
+  const rects = values
+    .map((value, i) => {
+      const h = value ? Math.max(2, Math.round((value / peak) * (height - 2))) : 1;
+      const x = i * (bar + gap);
+      const y = height - h;
+      return `<rect class="${value ? '' : 'zero'}" x="${x.toFixed(2)}" y="${y}" width="${bar.toFixed(2)}" height="${h}" rx="0.5"></rect>`;
+    })
+    .join('');
+  return `<svg class="spark" viewBox="0 0 ${width} ${height}" aria-hidden="true">${rects}</svg>`;
+}
+function boardRows() {
+  return paths.map((path) => {
+    const s = statsByPath[path];
+    const name = s?.name || path.split(/[\\/]/).pop();
+    return {
+      path,
+      name,
+      commits7d: s?.commits7d ?? null,
+      commits30d: s?.commits30d ?? null,
+      commitCount: s?.commitCount ?? null,
+      lastCommitAt: s?.lastCommitAt || null,
+      map: s?.commitsByDate || {},
+      hasCache: !!s,
+    };
+  });
+}
+function compareBoard(a, b) {
+  const key = boardSortKey;
+  let av = a[key];
+  let bv = b[key];
+  if (key === 'name') {
+    av = a.name.toLowerCase();
+    bv = b.name.toLowerCase();
+    return av < bv ? -boardSortDir : av > bv ? boardSortDir : 0;
+  }
+  if (key === 'lastCommitAt') {
+    av = av ? new Date(av).getTime() : 0;
+    bv = bv ? new Date(bv).getTime() : 0;
+  }
+  av = av == null ? -1 : av;
+  bv = bv == null ? -1 : bv;
+  if (av === bv) return a.name.localeCompare(b.name);
+  return av < bv ? -boardSortDir : boardSortDir;
+}
+function paintStats() {
+  const pulse = portfolioNumbers();
+  const map = mergedCommitsByDate();
+  const cursor = ensureStatsCursor({ commitsByDate: map });
+  const series = seriesForView(map, statsPeriod, cursor);
+  const tops = topReposForSeries(series, statsPeriod);
+  const rows = boardRows().sort(compareBoard);
+  const hasCache = pulse.cached > 0;
+  const coverage = `<span>Coverage <strong>${esc(pulse.cached)}/${esc(pulse.tracked)}</strong></span>`;
+  $('statsView').innerHTML = /* HTML */ `
+    <div class="heading">
+      <div>
+        <h1>Stats across repositories</h1>
+        <p>Combined activity and a side-by-side comparison of tracked repos on this machine.</p>
+      </div>
+      <div class="actions">
+        <button class="btn" id="statsLoad" ${!paired || statsBusy || !paths.length ? 'disabled' : ''}>
+          ${statsBusy ? 'Loading…' : 'Load portfolio stats'}
+        </button>
+        <button
+          class="btn"
+          id="statsRefresh"
+          ${!paired || statsBusy || !paths.length || !hasCache ? 'disabled' : ''}
+        >
+          ${statsBusy ? 'Refreshing…' : 'Refresh all stats'}
+        </button>
+      </div>
+    </div>
+    ${
+      !paired
+        ? '<div class="callout">Connect the companion to load local Git stats.</div>'
+        : !paths.length
+          ? '<div class="callout">Track repositories first, then load portfolio stats.</div>'
+          : !hasCache
+            ? '<div class="callout">No cached stats yet. Load portfolio stats to fill this page.</div>'
+            : ''
+    }
+    <section class="stats-section">
+      <div class="section-head">
+        <h2>Activity</h2>
+        <div class="period-tabs">
+          ${['day', 'week', 'month']
+            .map(
+              (period) => /* HTML */ `
+                <button data-stats-period="${period}" class="${statsPeriod === period ? 'selected' : ''}">
+                  ${period[0].toUpperCase() + period.slice(1)}
+                </button>
+              `,
+            )
+            .join('')}
+        </div>
+      </div>
+      ${timelineChart(map, series, statsPeriod, coverage)}
+      <div class="cal-nav">
+        <button class="btn" id="statsPrev">← Prev</button>
+        <h3>${esc(calendarTitle(cursor, statsPeriod))}</h3>
+        <button class="btn" id="statsNext">Next →</button>
+      </div>
+      <h3 style="margin:18px 0 0;font-size:14px">Top this period</h3>
+      ${
+        tops.length
+          ? /* HTML */ `
+              <ol class="top-repos">
+                ${tops
+                  .map(
+                    (row, i) => /* HTML */ `
+                      <li data-path="${esc(row.path)}" tabindex="0">
+                        <span class="rank">${esc(i + 1)}</span>
+                        <span class="name">${esc(row.name)}</span>
+                        <span class="count">${esc(row.commits)}</span>
+                      </li>
+                    `,
+                  )
+                  .join('')}
+              </ol>
+            `
+          : '<p class="note">No commits in this window across cached repositories.</p>'
+      }
+    </section>
+    <section class="stats-section">
+      <div class="section-head">
+        <h2>Repository comparison</h2>
+      </div>
+      <div class="board-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="sortable ${boardSortKey === 'name' ? (boardSortDir > 0 ? 'sorted-asc' : 'sorted-desc') : ''}" data-board-sort="name">Repo</th>
+              <th class="sortable ${boardSortKey === 'commits7d' ? (boardSortDir > 0 ? 'sorted-asc' : 'sorted-desc') : ''}" data-board-sort="commits7d">7d</th>
+              <th class="sortable ${boardSortKey === 'commits30d' ? (boardSortDir > 0 ? 'sorted-asc' : 'sorted-desc') : ''}" data-board-sort="commits30d">30d</th>
+              <th class="sortable ${boardSortKey === 'commitCount' ? (boardSortDir > 0 ? 'sorted-asc' : 'sorted-desc') : ''}" data-board-sort="commitCount">All</th>
+              <th class="sortable ${boardSortKey === 'lastCommitAt' ? (boardSortDir > 0 ? 'sorted-asc' : 'sorted-desc') : ''}" data-board-sort="lastCommitAt">Last commit</th>
+              <th>30d spark</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              rows.length
+                ? rows
+                    .map((row) => {
+                      const num = (value) =>
+                        value == null
+                          ? '<td class="num muted">—</td>'
+                          : `<td class="num">${esc(value)}</td>`;
+                      return /* HTML */ `
+                        <tr class="board-row" data-path="${esc(row.path)}" tabindex="0">
+                          <td><strong>${esc(row.name)}</strong></td>
+                          ${num(row.commits7d)}
+                          ${num(row.commits30d)}
+                          ${num(row.commitCount)}
+                          <td class="${row.lastCommitAt ? '' : 'muted'}">
+                            ${esc(row.lastCommitAt ? formatDate(row.lastCommitAt) : '—')}
+                          </td>
+                          <td>${row.hasCache ? sparkline(row.map) : '<span class="muted">—</span>'}</td>
+                        </tr>
+                      `;
+                    })
+                    .join('')
+                : '<tr><td colspan="6" class="muted">No tracked repositories.</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+  bindStatsPage();
+}
+function bindStatsPage() {
+  if ($('statsLoad')) {
+    $('statsLoad').onclick = () => computeStats({ all: true }, 'Loaded portfolio stats');
+  }
+  if ($('statsRefresh')) {
+    $('statsRefresh').onclick = () =>
+      computeStats({ all: true, refresh: true }, 'Refreshed portfolio stats');
+  }
+  document.querySelectorAll('[data-stats-period]').forEach((button) => {
+    button.onclick = () => {
+      statsPeriod = button.dataset.statsPeriod;
+      statsCursor = null;
+      paintStats();
+    };
+  });
+  if ($('statsPrev')) {
+    $('statsPrev').onclick = () => {
+      shiftStatsCursor(-1);
+      paintStats();
+    };
+  }
+  if ($('statsNext')) {
+    $('statsNext').onclick = () => {
+      shiftStatsCursor(1);
+      paintStats();
+    };
+  }
+  document.querySelectorAll('[data-board-sort]').forEach((th) => {
+    th.onclick = () => {
+      const key = th.dataset.boardSort;
+      if (boardSortKey === key) boardSortDir = -boardSortDir;
+      else {
+        boardSortKey = key;
+        boardSortDir = key === 'name' ? 1 : -1;
+      }
+      paintStats();
+    };
+  });
+  const openRow = (node) => {
+    const path = node?.dataset?.path;
+    if (path) openRepo(path);
+  };
+  document.querySelectorAll('#statsView [data-path]').forEach((node) => {
+    node.onclick = () => openRow(node);
+    node.onkeydown = (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openRow(node);
+      }
+    };
+  });
 }
 function paintDetail() {
   const path = detailPath;
@@ -404,13 +1045,17 @@ function paintDetail() {
       github: null,
     });
   const s = statsByPath[path];
-  const seriesKey = PERIOD_KEYS[detailPeriod] || 'commitsByDay';
-  const series = s?.[seriesKey] || [];
-  const contributors = (s?.topContributors || [])
-    .map((c) => `<li><span>${esc(c.name)}</span><span>${esc(c.commits)}</span></li>`)
-    .join('');
   const remotes =
     (s?.remotes || []).map((m) => `${esc(m.name)} · ${esc(m.url)}`).join('<br>') || 'None';
+  const summary = s?.activitySummary || {};
+  const rangeLabel =
+    detailPeriod === 'day'
+      ? 'Month calendar · browse with Prev / Next'
+      : detailPeriod === 'week'
+        ? '12-week pages · browse with Prev / Next'
+        : detailPeriod === 'month'
+          ? 'Year of months · browse with Prev / Next'
+          : '12-year pages · browse with Prev / Next';
   $('detailView').innerHTML = /* HTML */ `
     <button class="detail-back" id="backRepos">← Back to repositories</button>
     <h1 class="detail-title">${esc(r.name)}</h1>
@@ -428,23 +1073,41 @@ function paintDetail() {
     ${
       s
         ? /* HTML */ `
-            <div class="detail-grid">
-              ${cells([
-                ['Commits', s.commitCount ?? '—'],
-                ['30d', s.commits30d ?? '—'],
-                ['90d', s.commits90d ?? '—'],
-                ['Contributors', s.contributorCount ?? '—'],
-                ['Tracked size', formatBytes(s.workingTreeBytes)],
-                ['Branches', s.branchCount ?? '—'],
-                ['Stashes', s.stashCount ?? '—'],
-                ['Last activity', relativeTime(s.lastCommitAt)],
-              ])}
-            </div>
-            <p class="note">
-              Last: ${esc(s.lastCommitAuthor || '—')} · ${esc(s.lastCommitSubject || '')}
-            </p>
+            <section class="stats-section">
+              <h2>Volume & age</h2>
+              <div class="detail-grid">
+                ${cells([
+                  ['Total commits', s.commitCount ?? '—'],
+                  ['Age', s.ageLabel || '—'],
+                  ['First commit', formatDate(s.firstCommitAt)],
+                  ['Lifespan', s.lifespanDays != null ? s.lifespanDays + ' days' : '—'],
+                  ['7d', s.commits7d ?? '—'],
+                  ['30d', s.commits30d ?? '—'],
+                  ['90d', s.commits90d ?? '—'],
+                  ['Tracked size', formatBytes(s.workingTreeBytes)],
+                ])}
+              </div>
+              <p class="note">
+                Last: ${esc(s.lastCommitAuthor || '—')} · ${esc(formatDate(s.lastCommitAt))} ·
+                ${esc(s.lastCommitSubject || '')}
+              </p>
+            </section>
             <section class="stats-section">
               <h2>Commits over time</h2>
+              <div class="detail-grid">
+                ${cells([
+                  [
+                    'Peak day',
+                    (summary.peakDayCommits ?? '—') +
+                      (summary.peakDayPeriod ? ` · ${formatDate(summary.peakDayPeriod + 'T12:00:00')}` : ''),
+                  ],
+                  ['Peak week', summary.peakWeekCommits ?? '—'],
+                  ['Avg / week', summary.avgWeekCommits ?? '—'],
+                  ['Burst ratio', summary.burstRatio ?? '—'],
+                  ['Active weeks', summary.activeWeeks ?? '—'],
+                  ['Quiet weeks', summary.quietWeeks ?? '—'],
+                ])}
+              </div>
               <div class="period-tabs">
                 ${['day', 'week', 'month', 'year']
                   .map(
@@ -456,23 +1119,8 @@ function paintDetail() {
                   )
                   .join('')}
               </div>
-              <p class="small">
-                ${
-                  detailPeriod === 'day'
-                    ? 'Last 30 days'
-                    : detailPeriod === 'week'
-                      ? 'Last 26 weeks'
-                      : detailPeriod === 'month'
-                        ? 'Last 24 months'
-                        : 'All years with commits'
-                }
-              </p>
-              ${barChart(series)}
-              ${periodTable(series)}
-            </section>
-            <section class="stats-section">
-              <h2>Contributors · top 5</h2>
-              <ul class="contrib-list">${contributors || '<li><span>None</span></li>'}</ul>
+              <p class="small">${esc(rangeLabel)}</p>
+              ${timelineViz(s)}
             </section>
             <section class="stats-section">
               <h2>Remotes</h2>
@@ -504,9 +1152,18 @@ function paintDetail() {
   document.querySelectorAll('[data-period]').forEach((button) => {
     button.onclick = () => {
       detailPeriod = button.dataset.period;
+      detailCursor = null;
       paintDetail();
     };
   });
+  if ($('calPrev')) $('calPrev').onclick = () => {
+    shiftCursor(-1);
+    paintDetail();
+  };
+  if ($('calNext')) $('calNext').onclick = () => {
+    shiftCursor(1);
+    paintDetail();
+  };
   const refresh = $('refreshOneStats');
   if (refresh) {
     refresh.onclick = async () => {
@@ -530,7 +1187,14 @@ function paintDetail() {
 async function ensureDetailStats() {
   if (!detailPath || !paired) return;
   const cached = statsByPath[detailPath];
-  if (cached && Array.isArray(cached.commitsByDay)) return;
+  if (
+    cached &&
+    cached.commitsByDate &&
+    typeof cached.commitsByDate === 'object' &&
+    cached.activitySummary
+  ) {
+    return;
+  }
   try {
     const result = await api('stats', { path: detailPath });
     mergeStats(result.repositories);
@@ -547,7 +1211,8 @@ async function ensureDetailStats() {
   }
 }
 async function syncRoute() {
-  detailPath = parseHash();
+  const route = parseRoute();
+  detailPath = route.view === 'repo' ? route.path : null;
   render();
   if (detailPath) await ensureDetailStats();
 }
@@ -579,18 +1244,23 @@ function connect() {
   open(
     /* HTML */ `
       <h3 id="dialogTitle">Connect this machine</h3>
-      <p>Start the companion in your local repo checkout:</p>
-      <div class="mono">python3 companion/server.py --root ~/Projects</div>
+      <p>Easiest local path — starts companion, UI, and auto-pairs:</p>
+      <div class="mono">python3 companion/server.py --root ~/Projects --ui</div>
       <p>
-        Paste the pairing token printed in your terminal. It changes when the companion restarts.
+        Or paste a token from the companion terminal. The browser remembers it until you disconnect.
+        Restarting the companion keeps the same token unless you pass
+        <span class="mono">--new-token</span>.
       </p>
       <label class="small" for="pairToken">Pairing token</label>
-      <input class="setup-input" id="pairToken" type="password" autocomplete="off" />
-      <button class="btn lime" id="pair">Connect</button>
+      <input class="setup-input" id="pairToken" type="password" autocomplete="off" value="${esc(token)}" />
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn lime" id="pair">Connect</button>
+        ${paired ? '<button class="btn" id="forgetPair">Disconnect</button>' : ''}
+      </div>
       <p id="pairError" class="note" role="status"></p>
       <p class="note">
-        The browser may ask to access localhost. The token stays in this tab’s memory. No login
-        credentials or source files are sent to hosting.
+        The browser may ask to access localhost. No login credentials or source files are sent to
+        hosting.
       </p>
     `,
     'Connection settings',
@@ -598,24 +1268,17 @@ function connect() {
   $('pair').onclick = async () => {
     const candidate = $('pairToken').value.trim();
     if (!candidate) return;
-    const previous = token;
-    token = candidate;
     $('pair').disabled = true;
     try {
-      const result = await api('status');
-      paired = true;
-      machineName = result.machine;
-      roots = result.roots;
-      paths = result.paths;
       repos = [];
       scannedAt = null;
       statsByPath = {};
+      await pairWithToken(candidate);
       render();
       close();
       await hydrateStats();
       manage();
     } catch (e) {
-      token = previous;
       $('pairError').textContent =
         'Could not connect: ' +
         e.message +
@@ -623,6 +1286,41 @@ function connect() {
       $('pair').disabled = false;
     }
   };
+  if ($('forgetPair')) {
+    $('forgetPair').onclick = () => {
+      clearPairing();
+      render();
+      close();
+    };
+  }
+}
+async function bootstrapPairing() {
+  const params = new URLSearchParams(location.search);
+  const fromQuery = (params.get('pair') || '').trim();
+  if (fromQuery) {
+    params.delete('pair');
+    const qs = params.toString();
+    history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+    try {
+      await pairWithToken(fromQuery);
+      render();
+      await hydrateStats();
+      return;
+    } catch {
+      writeStoredToken('');
+    }
+  }
+  const stored = readStoredToken();
+  if (!stored) return;
+  try {
+    await pairWithToken(stored);
+    render();
+    await hydrateStats();
+  } catch {
+    writeStoredToken('');
+    token = '';
+    paired = false;
+  }
 }
 function manage() {
   if (!paired) return connect();
@@ -757,6 +1455,11 @@ $('scan').onclick = async () => {
 $('sync').onclick = sync;
 $('review').onclick = sync;
 $('connect').onclick = connect;
+$('disconnect').onclick = () => {
+  clearPairing();
+  if (detailPath) closeRepo();
+  render();
+};
 $('manage').onclick = manage;
 $('close').onclick = close;
 $('overlay').onclick = (e) => {
@@ -780,6 +1483,17 @@ document.addEventListener('keydown', (e) => {
 });
 $('search').oninput = render;
 $('machine').onchange = render;
+document.querySelectorAll('#repoHead th.sortable').forEach((th) => {
+  th.onclick = () => {
+    const key = th.dataset.sort;
+    if (sortKey === key) sortDir = -sortDir;
+    else {
+      sortKey = key;
+      sortDir = key === 'name' || key === 'branch' || key === 'next' ? 1 : -1;
+    }
+    render();
+  };
+});
 document.querySelectorAll('[data-filter]').forEach(
   (b) =>
     (b.onclick = () => {
@@ -792,9 +1506,10 @@ document.querySelectorAll('[data-filter]').forEach(
 );
 $('overviewNav').onclick = () => {
   $('machine').value = 'current';
-  if (detailPath) closeRepo();
+  if (parseRoute().view !== 'overview') location.hash = '#/';
   else render();
 };
+$('statsNav').onclick = () => openStats();
 window.addEventListener('hashchange', () => {
   syncRoute();
 });
@@ -820,3 +1535,4 @@ $('activityNav').onclick = () =>
     'Activity',
   );
 syncRoute();
+bootstrapPairing();

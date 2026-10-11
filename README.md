@@ -8,12 +8,20 @@ Dashboard: https://repo.theana.online · GitHub: https://github.com/longson84/re
 
 Requires Python 3.9+ and Git. No Python packages need installing.
 
+**Local (recommended):** one command starts the companion, serves the dashboard, opens the browser, and pairs automatically:
+
 ```sh
 cd /path/to/Projects/repo
-python3 companion/server.py --root ~/Projects
+python3 companion/server.py --root ~/Projects --ui
 ```
 
-Keep the terminal running. Open the dashboard, choose **Connect companion**, and paste the token printed in your terminal. Allow browser access to localhost if prompted. Pairing is stored only in the current tab’s memory; reconnect after refreshing. The token changes when the service restarts.
+Keep that terminal running. The browser opens `http://127.0.0.1:8766` already paired. Refresh keeps the connection; use **Disconnect** in the UI to forget the token. The pairing token is stored in ignored `.repo-local/pairing-token` and reused across companion restarts. Pass `--new-token` when you want to rotate it.
+
+**Hosted dashboard:** start without `--ui`, open https://repo.theana.online, choose **Connect companion**, and paste the token once. The browser remembers it in `localStorage` until you disconnect.
+
+```sh
+python3 companion/server.py --root ~/Projects
+```
 
 The companion listens at `127.0.0.1:48731`. The public website does not run Git; the companion runs it on the machine where it is installed. Git uses that machine’s existing remote authentication.
 
@@ -43,20 +51,19 @@ Other local branches, stashes, ignored files, and databases are not included. A 
 Stats are separate from the sync scan. After pairing, the dashboard can load local Git statistics for tracked repositories (commit counts, recent activity, contributors, size, languages, branches, remotes, stashes, and recent churn).
 
 - **Load portfolio stats** computes stats for every tracked path and fills the portfolio sums and table columns.
+- **Stats** (`#/stats`) combines activity across tracked repos (day/week/month chart + top repos) and a sortable comparison board (7d / 30d / all / last commit / 30-day sparkline).
 - Click a repository name or **Open** to open its detail page (`#/repo?<path>`). Missing stats are computed on demand; **Refresh stats** forces a recompute.
-- The detail page shows commit counts by **day** (30), **week** (26), **month** (24), and **year** (all years with commits), plus summary cards.
+- The detail page shows volume/age, burst vs quiet weeks, and a commit timeline by **day**, **week**, **month**, and **year**.
 - Results are cached in ignored `.repo-local/stats.json` on that machine. A cache entry is reused for 24 hours while `HEAD` is unchanged; a new commit or an explicit refresh invalidates it. Older cache entries without the timeline are recomputed automatically.
 - Portfolio totals sum only repositories that already have cached stats. List and detail views share the same cache entry per absolute path. Stats never fetch remotes and are not merged across machines.
 
 ## Local preview and tests
 
-In another terminal:
+`--ui` already serves `dist/` on port 8766. To preview the UI alone (without auto-pair):
 
 ```sh
 python3 -m http.server 8766 --bind 127.0.0.1 --directory dist
 ```
-
-Open http://127.0.0.1:8766 and pair with the same companion.
 
 ```sh
 python3 -m unittest discover -s tests -v
@@ -71,4 +78,4 @@ The companion accepts only the hosted dashboard and the documented local-preview
 - `companion/server.py`: local discovery, Git scanner, and stats collector.
 - `.openai/hosting.json`: existing Sites project identity; preserve it when publishing updates.
 
-GitHub stores the project source. Hosting remains through Sites with private access and the custom domain `repo.theana.online`. Deployments use the Sites-managed source repository; pushing GitHub does not automatically deploy. Local settings and pairing tokens must never be included in deployment artifacts.
+GitHub stores the project source. Hosting remains through Sites with private access and the custom domain `repo.theana.online`. Deployments use the Sites-managed source repository; pushing GitHub does not automatically deploy. Local settings and pairing tokens (`.repo-local/`) must never be included in deployment artifacts.
