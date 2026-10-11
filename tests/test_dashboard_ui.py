@@ -66,6 +66,66 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
         self.assertIn('data-project-id="alpha"', html)
         self.assertIn("Alpha", html)
 
+    def test_tracking_reconciliation_message_reports_paths_and_project_cleanup(self):
+        message = self.render(
+            "trackingReconciliationMessage({removed_paths:2,"
+            "removed_repository_memberships:3,removed_primary_workspaces:1,"
+            "removed_workspace_aliases:2,removed_projects:1})"
+        )
+
+        self.assertIn("2 saved paths", message)
+        self.assertIn("3 repository memberships", message)
+        self.assertIn("1 primary workspace", message)
+        self.assertIn("2 workspace aliases", message)
+        self.assertIn("1 empty project", message)
+
+    def test_detect_panel_renders_availability_columns_only(self):
+        html = self.render(
+            "(paired=true,aiDetect={version:3,detectedAt:'2026-10-11T00:00:00Z',"
+            "summary:{total:1,stores_found:1,found:1},sources:[{id:'claude.code',"
+            "tool:'claude-code',surface:'cli',path:'/store',exists:true,size_bytes:10,"
+            "notes:'Available',supports:{sessions:true}}]},paintAiDetectPanel())"
+        )
+
+        for heading in ("Surface", "Status", "Path", "Size", "Notes"):
+            self.assertIn(f"<th>{heading}</th>", html)
+        self.assertNotIn("Conversations≈", html)
+        self.assertNotIn("Executions≈", html)
+        self.assertNotIn("Representations", html)
+
+    def test_ai_panels_explain_selected_github_scope_and_exclusions(self):
+        result = self.render(
+            "(() => { paired=true; paths=[]; aiSessions={sessions:[],conversation_count:0,"
+            "execution_count:0,representation_count:0}; aiSearch={q:'x',hits:[],count:0,"
+            "engine:'python'}; aiUsage={aggregatedAt:'2026-10-11T00:00:00Z',"
+            "totals:{input_tokens:0,cached_tokens:0,output_tokens:0,cache_write_tokens:0,events:0},"
+            "scope:{kind:'selected_github_repositories',repository_count:0,"
+            "excluded_event_count:7,excluded_tokens:{input_tokens:70,cached_tokens:0,"
+            "output_tokens:7,cache_write_tokens:0,events:7}},by_day:[],by_week:[],"
+            "by_month:[],by_year:[],by_model:[],by_project:[],by_surface:[],by_tool:[],"
+            "by_workspace:[],quality:{attribution:{git:0,configured:0,path:0,unattributed:0},"
+            "identity_warnings:[],reconciliation:{}},caveats:[]};"
+            "return {sessions:paintAiSessionsPanel(),search:paintAiSearchPanel(),"
+            "tokens:paintAiTokensPanel()};})()"
+        )
+
+        for panel in result.values():
+            self.assertIn("Selected GitHub repositories", panel)
+        self.assertIn("Select a repository with a github.com remote", result["sessions"])
+        self.assertIn("7 events excluded", result["tokens"])
+        self.assertNotIn(" path ·", result["tokens"])
+
+    def test_empty_scoped_session_response_replaces_loaded_rows(self):
+        html = self.render(
+            "(() => { paired=true; aiSessions={sessions:[{id:'old-row',tool:'codex'}]};"
+            "fetch=async()=>({ok:true,status:200,json:async()=>({sessions:[],count:0,"
+            "conversation_count:0,execution_count:0,representation_count:0})});"
+            "return runAiSessions().then(()=>paintAiSessionsPanel());})()"
+        )
+
+        self.assertNotIn("old-row", html)
+        self.assertIn("Select a repository with a github.com remote", html)
+
     def test_repository_hierarchy_renders_stable_ids_and_workspace_status(self):
         html = self.render(
             "statsHierarchyRows([{project_id:'product',project_name:'Product',commitCount:3,"

@@ -67,6 +67,24 @@ function clearPairing() {
   gitStatsInvalidatedByIdentity = false;
   writeStoredToken('');
 }
+function trackingReconciliationMessage(reconciliation) {
+  if (!reconciliation) return '';
+  const labels = [
+    ['removed_paths', 'saved path', 'saved paths'],
+    ['removed_repository_memberships', 'repository membership', 'repository memberships'],
+    ['removed_primary_workspaces', 'primary workspace', 'primary workspaces'],
+    ['removed_workspace_aliases', 'workspace alias', 'workspace aliases'],
+    ['removed_projects', 'empty project', 'empty projects'],
+  ];
+  const removed = labels
+    .map(([key, singular, plural]) => {
+      const count = Number(reconciliation[key] || 0);
+      return count ? `${count} ${count === 1 ? singular : plural}` : '';
+    })
+    .filter(Boolean);
+  if (!removed.length) return '';
+  return `Removed ${removed.join(', ')} outside Selected GitHub repositories.`;
+}
 function applyStatus(result) {
   machineName = result.machine || machineName;
   roots = result.roots || [];
@@ -74,6 +92,11 @@ function applyStatus(result) {
   if (Array.isArray(result.workspaces)) workspaces = result.workspaces;
   if (Array.isArray(result.repositories)) repos = result.repositories;
   if ('scannedAt' in result) scannedAt = result.scannedAt || null;
+  const reconciliationMessage = trackingReconciliationMessage(result.reconciliation);
+  if (reconciliationMessage) {
+    activity.unshift(reconciliationMessage);
+    toast(reconciliationMessage);
+  }
 }
 async function pairWithToken(candidate) {
   const previous = token;
@@ -509,7 +532,7 @@ function render() {
     : !paired
       ? 'Connect the local companion to begin.'
       : !scannedAt
-        ? 'Choose repositories under Manage tracked repos, then scan this machine.'
+        ? 'Select a repository with a github.com remote under Manage tracked repos, then scan this machine.'
         : 'No repositories match this view.';
   $('repoCount').textContent = other ? 'Unknown' : list.length;
   ['total', 'behindStat', 'aheadStat', 'dirtyStat'].forEach(
@@ -547,7 +570,7 @@ function render() {
   $('machineMeta').textContent = other
     ? 'No report received'
     : paired
-      ? `${paths.length} tracked repos · ${scannedAt ? 'Scanned ' + new Date(scannedAt).toLocaleString() : 'Not scanned yet'}`
+      ? `${paths.length} selected GitHub repos · ${scannedAt ? 'Scanned ' + new Date(scannedAt).toLocaleString() : 'Not scanned yet'}`
       : 'Run companion with --ui, or connect with a pairing token.';
   $('snapshotLabel').textContent =
     scannedAt && !other
@@ -821,7 +844,7 @@ function formatTokens(n) {
 
 function paintAiDetectPanel() {
   const sources = aiDetect?.sources || [];
-  const summary = aiDetect?.summary || { found: 0, total: 0, sessions: 0 };
+  const summary = aiDetect?.summary || { found: 0, stores_found: 0, total: 0 };
   const detectedAt = aiDetect?.detectedAt ? new Date(aiDetect.detectedAt).toLocaleString() : null;
   const byTool = {};
   sources.forEach((item) => {
@@ -836,29 +859,21 @@ function paintAiDetectPanel() {
   ];
   let rows = '';
   if (!paired) {
-    rows = `<tr><td colspan="8"><div class="callout">Connect the companion to detect AI discussion stores on this machine.</div></td></tr>`;
+    rows = `<tr><td colspan="5"><div class="callout">Connect the companion to detect AI discussion stores on this machine.</div></td></tr>`;
   } else if (!sources.length) {
-    rows = `<tr><td colspan="8"><div class="callout">Click Detect to scan known Antigravity, Claude, Codex, and Cursor locations.</div></td></tr>`;
+    rows = `<tr><td colspan="5"><div class="callout">Click Detect to scan known Antigravity, Claude, Codex, and Cursor locations.</div></td></tr>`;
   } else {
     tools.forEach((tool) => {
-      rows += `<tr class="ai-tool-head"><td colspan="8">${esc(tool)}</td></tr>`;
+      rows += `<tr class="ai-tool-head"><td colspan="5">${esc(tool)}</td></tr>`;
       byTool[tool].forEach((item) => {
         const status = item.exists
           ? `<span class="ai-found">FOUND</span>`
           : `<span class="ai-missing">—</span>`;
-        const conversations =
-          item.conversation_estimate == null ? '—' : String(item.conversation_estimate);
-        const executions = item.execution_estimate == null ? '—' : String(item.execution_estimate);
-        const representations =
-          item.representation_estimate == null ? '—' : String(item.representation_estimate);
         rows += `<tr>
           <td>${esc(item.surface)}</td>
           <td>${status}</td>
           <td class="ai-path">${esc(item.path)}</td>
           <td>${item.exists ? esc(formatBytes(item.size_bytes)) : '—'}</td>
-          <td>${esc(conversations)}</td>
-          <td>${esc(executions)}</td>
-          <td>${esc(representations)}</td>
           <td class="small">${esc(item.notes || '')}</td>
         </tr>`;
       });
@@ -867,7 +882,7 @@ function paintAiDetectPanel() {
   return /* HTML */ `
     <div class="machine-meta" style="margin: 0 0 18px">
       ${detectedAt
-        ? `${summary.stores_found ?? summary.found ?? 0}/${summary.total ?? sources.length} stores found · ${summary.conversation_estimate ?? summary.sessions ?? '—'} logical conversations · ${summary.execution_estimate ?? '—'} executions · ${summary.representation_estimate ?? '—'} physical representations · Detected ${esc(detectedAt)}`
+        ? `${summary.stores_found ?? summary.found ?? 0}/${summary.total ?? sources.length} stores found · Detected ${esc(detectedAt)}`
         : paired
           ? 'Not detected yet on this machine.'
           : 'Companion not connected.'}
@@ -879,9 +894,6 @@ function paintAiDetectPanel() {
           <th>Status</th>
           <th>Path</th>
           <th>Size</th>
-          <th>Conversations≈</th>
-          <th>Executions≈</th>
-          <th>Representations</th>
           <th>Notes</th>
         </tr>
       </thead>
@@ -913,7 +925,7 @@ function paintAiSessionsPanel() {
   } else if (!aiSessions) {
     rows = `<tr><td colspan="7"><div class="callout">Click Load conversations to list Antigravity, Claude Code, Codex, and Cursor chats.</div></td></tr>`;
   } else if (!list.length) {
-    rows = `<tr><td colspan="7"><div class="callout">No conversations matched these filters.</div></td></tr>`;
+    rows = `<tr><td colspan="7"><div class="callout">No conversations matched these filters. Select a repository with a github.com remote.</div></td></tr>`;
   } else {
     list.forEach((item) => {
       rows += `<tr>
@@ -928,8 +940,8 @@ function paintAiSessionsPanel() {
     });
   }
   const meta = aiSessions
-    ? `${aiSessions.conversation_count ?? aiSessions.count ?? 0} logical conversations · ${aiSessions.execution_count ?? '—'} executions · ${aiSessions.representation_count ?? '—'} physical representations${aiSessions.truncated ? ' (conversation list truncated)' : ''} · Listed ${esc(formatAiWhen(aiSessions.listedAt))}`
-    : 'Conversations not loaded yet.';
+    ? `Selected GitHub repositories · ${aiSessions.conversation_count ?? aiSessions.count ?? 0} logical conversations · ${aiSessions.execution_count ?? '—'} executions · ${aiSessions.representation_count ?? '—'} physical representations${aiSessions.truncated ? ' (conversation list truncated)' : ''} · Listed ${esc(formatAiWhen(aiSessions.listedAt))}`
+    : 'Selected GitHub repositories · Conversations not loaded yet.';
   return /* HTML */ `
     <div class="ai-filters">
       <label class="small" for="aiSourceFilter">Source</label>
@@ -1183,7 +1195,7 @@ function attributionQualityHtml(quality, workspaces) {
     )
     .join('');
   return `<details class="ai-attribution-quality">
-    <summary>Attribution quality · ${esc(counts.git || 0)} Git · ${esc(counts.configured || 0)} configured · ${esc(counts.path || 0)} path · ${esc(counts.unattributed || 0)} unattributed</summary>
+    <summary>Attribution quality · ${esc(counts.git || 0)} Git · ${esc(counts.configured || 0)} configured · ${esc(counts.unattributed || 0)} unattributed</summary>
     <ul>${configuredRows}${warningRows || '<li>No identity warnings.</li>'}</ul>
   </details>`;
 }
@@ -1236,6 +1248,10 @@ function paintAiTokensPanel() {
   const meta = aiUsage
     ? `${formatTokens(scopeTotals.input_tokens)} in · ${formatTokens(scopeTotals.cached_tokens)} cached · ${formatTokens(scopeTotals.output_tokens)} out · ${formatTokens(scopeTotals.cache_write_tokens)} cache write · ${esc(formatAiWhen(aiUsage.aggregatedAt))}`
     : 'Usage not loaded yet.';
+  const usageScope = aiUsage?.scope;
+  const scopeNote = usageScope
+    ? `Selected GitHub repositories · ${esc(String(usageScope.repository_count ?? 0))} repositories · ${esc(String(usageScope.excluded_event_count ?? 0))} events excluded outside scope`
+    : 'Selected GitHub repositories';
   const projectList = (selectedPeriod?.by_project || []).filter((item) => {
     const query = aiUsageProjectFilter.trim().toLowerCase();
     return !query || aiProjectLabel(item).toLowerCase().includes(query);
@@ -1267,7 +1283,7 @@ function paintAiTokensPanel() {
   } else if (aiUsageGroup === 'period') {
     firstCol = aiUsagePeriod[0].toUpperCase() + aiUsagePeriod.slice(1);
     if (!series.length) {
-      rows = `<tr><td colspan="8"><div class="callout">No dated usage events found.</div></td></tr>`;
+      rows = `<tr><td colspan="8"><div class="callout">No dated usage events found. Select a repository with a github.com remote.</div></td></tr>`;
     } else {
       rows = usageDataRows(
         series,
@@ -1279,7 +1295,7 @@ function paintAiTokensPanel() {
   } else if (aiUsageGroup === 'model') {
     firstCol = 'Model';
     if (!selectedPeriod) {
-      rows = `<tr><td colspan="8"><div class="callout">No dated usage events found.</div></td></tr>`;
+      rows = `<tr><td colspan="8"><div class="callout">No dated usage events found. Select a repository with a github.com remote.</div></td></tr>`;
     } else if (!modelList.length) {
       rows = `<tr><td colspan="8"><div class="callout">No matching model usage in ${esc(formatAiPeriodLabel(selectedKey))}.</div></td></tr>`;
     } else {
@@ -1289,7 +1305,7 @@ function paintAiTokensPanel() {
   } else if (aiUsageGroup === 'project') {
     firstCol = 'Project';
     if (!selectedPeriod) {
-      rows = `<tr><td colspan="8"><div class="callout">No dated usage events found.</div></td></tr>`;
+      rows = `<tr><td colspan="8"><div class="callout">No dated usage events found. Select a repository with a github.com remote.</div></td></tr>`;
     } else if (!projectList.length) {
       rows = `<tr><td colspan="8"><div class="callout">No matching project usage in ${esc(formatAiPeriodLabel(selectedKey))}.</div></td></tr>`;
     } else {
@@ -1300,7 +1316,7 @@ function paintAiTokensPanel() {
     firstCol = 'Surface';
     const list = aiUsage.by_surface || [];
     if (!list.length) {
-      rows = `<tr><td colspan="8"><div class="callout">No usage events found for these sources.</div></td></tr>`;
+      rows = `<tr><td colspan="8"><div class="callout">No usage events found for these sources. Select a repository with a github.com remote.</div></td></tr>`;
     } else {
       rows = usageDataRows(list, (item) => item.label || '—', usageTokenVolume(aiUsage.totals));
       totalRow = usageTotalRow(aiUsage.totals);
@@ -1309,7 +1325,7 @@ function paintAiTokensPanel() {
     firstCol = 'Tool';
     const list = aiUsage.by_tool || [];
     if (!list.length) {
-      rows = `<tr><td colspan="8"><div class="callout">No usage events found for these sources.</div></td></tr>`;
+      rows = `<tr><td colspan="8"><div class="callout">No usage events found for these sources. Select a repository with a github.com remote.</div></td></tr>`;
     } else {
       rows = usageDataRows(list, (item) => item.tool || '—', usageTokenVolume(aiUsage.totals));
       totalRow = usageTotalRow(aiUsage.totals);
@@ -1388,6 +1404,7 @@ function paintAiTokensPanel() {
       </button>
     </div>
     ${periodNav}
+    <div class="callout" style="margin: 0 0 18px"><strong>${scopeNote}</strong></div>
     <div class="machine-meta" style="margin: 0 0 18px">${meta}</div>
     <div class="ai-table-scroll">
       <table class="ai-table">
@@ -1436,7 +1453,7 @@ function paintAiSearchPanel() {
   } else if (!aiSearch) {
     rows = `<tr><td colspan="4"><div class="callout">Enter a query and click Search. Scans Antigravity, Claude, Codex, and Cursor stores on this machine.</div></td></tr>`;
   } else if (!hits.length) {
-    rows = `<tr><td colspan="4"><div class="callout">No hits for “${esc(aiSearch.q)}”.</div></td></tr>`;
+    rows = `<tr><td colspan="4"><div class="callout">No hits for “${esc(aiSearch.q)}”. Select a repository with a github.com remote.</div></td></tr>`;
   } else {
     hits.forEach((hit) => {
       rows += `<tr>
@@ -1449,8 +1466,8 @@ function paintAiSearchPanel() {
   }
 
   const meta = aiSearch
-    ? `${aiSearch.count} hit${aiSearch.count === 1 ? '' : 's'}${aiSearch.truncated ? ' (truncated)' : ''} · ${esc(aiSearch.engine || 'python')} · ${esc(formatAiWhen(aiSearch.searchedAt))}`
-    : 'Search not run yet.';
+    ? `Selected GitHub repositories · ${aiSearch.count} hit${aiSearch.count === 1 ? '' : 's'}${aiSearch.truncated ? ' (truncated)' : ''} · ${esc(aiSearch.engine || 'python')} · ${esc(formatAiWhen(aiSearch.searchedAt))}`
+    : 'Selected GitHub repositories · Search not run yet.';
 
   return /* HTML */ `
     <div class="ai-filters">
@@ -1546,8 +1563,8 @@ function paintAi() {
     </div>
     ${panel}
     <p class="small" style="margin-top: 16px">
-      Detect, logical conversations, unique token calls, and search across local AI stores. Export
-      comes next.
+      Detects local store availability. Conversations, token calls, and search are limited to
+      Selected GitHub repositories.
     </p>
   `;
   document.querySelectorAll('[data-ai-tab]').forEach((button) => {
@@ -3181,8 +3198,8 @@ async function manage() {
     /* HTML */ `
       <h3 id="dialogTitle">Manage tracked repos</h3>
       <p>
-        Discover within an approved folder. Repository selection is for project grouping; Tracked
-        controls what appears in reports on ${esc(machineName)}.
+        Discover within an approved folder. Select a repository with a github.com remote to include
+        it in reports on ${esc(machineName)}. Group selected repositories into logical projects.
       </p>
       <label class="small" for="rootPath">Discovery folder</label>
       <input class="setup-input" id="rootPath" value="${esc(roots[0] || '')}" />
@@ -3216,9 +3233,10 @@ async function manage() {
       );
       render();
       draw();
-      $('settingsError').textContent = `Tracking ${paths.length} repositor${
-        paths.length === 1 ? 'y' : 'ies'
-      }.`;
+      const cleanup = trackingReconciliationMessage(result.reconciliation);
+      $('settingsError').textContent =
+        cleanup ||
+        `Tracking ${paths.length} selected GitHub repositor${paths.length === 1 ? 'y' : 'ies'}.`;
     } catch (e) {
       $('settingsError').textContent = e.message;
     }
@@ -3432,8 +3450,12 @@ async function manage() {
       discoveredWorkspaces = [...discoveredWorkspaces, ...(result.repositories || [])];
       choices = projectManagerModel(paths, workspaces, discoveredWorkspaces);
       draw();
+      const excluded = Number(result.excluded_candidate_count || 0);
       $('settingsError').textContent =
-        `Found ${result.repositories.length} repositories. Choose grouping or tracking separately.`;
+        `Found ${(result.repositories || []).length} eligible GitHub repositories.` +
+        (excluded
+          ? ` Excluded ${excluded} candidate${excluded === 1 ? '' : 's'} without a github.com remote.`
+          : '');
     } catch (e) {
       $('settingsError').textContent = e.message;
     } finally {
