@@ -55,15 +55,20 @@ function clearPairing() {
   statsByPath = {};
   writeStoredToken('');
 }
+function applyStatus(result) {
+  machineName = result.machine || machineName;
+  roots = result.roots || [];
+  paths = result.paths || [];
+  if (Array.isArray(result.repositories)) repos = result.repositories;
+  if ('scannedAt' in result) scannedAt = result.scannedAt || null;
+}
 async function pairWithToken(candidate) {
   const previous = token;
   token = candidate;
   try {
     const result = await api('status');
     paired = true;
-    machineName = result.machine;
-    roots = result.roots;
-    paths = result.paths;
+    applyStatus(result);
     writeStoredToken(candidate);
     return result;
   } catch (error) {
@@ -214,22 +219,6 @@ async function hydrateStats() {
     /* cache hydrate is best-effort */
   }
 }
-async function computeStats(body, label) {
-  if (!paired || statsBusy) return;
-  statsBusy = true;
-  render();
-  try {
-    const result = await api('stats', body);
-    mergeStats(result.repositories);
-    activity.unshift(label + ' at ' + new Date().toLocaleString());
-    toast(label + ' complete for ' + (result.repositories || []).length + ' repositories.');
-  } catch (e) {
-    toast('Stats failed: ' + e.message);
-  } finally {
-    statsBusy = false;
-    render();
-  }
-}
 function toast(message) {
   $('toast').textContent = message;
   $('toast').style.display = 'block';
@@ -347,7 +336,6 @@ function render() {
   const pulse = portfolioNumbers();
   const showPortfolio = paired && !other && paths.length;
   $('portfolioStats').hidden = !showPortfolio;
-  $('portfolioActions').hidden = !showPortfolio;
   if (showPortfolio) {
     const hasCache = pulse.cached > 0;
     $('commitStat').textContent = hasCache ? String(pulse.commits) : '—';
@@ -356,16 +344,9 @@ function render() {
     $('statsCoverageStat').textContent = `${pulse.cached}/${pulse.tracked}`;
     $('statsCoverageLabel').textContent = hasCache
       ? 'Cached / tracked'
-      : 'No stats loaded yet';
-    $('statsMeta').textContent = statsBusy
-      ? 'Computing stats…'
-      : hasCache
-        ? `Portfolio sums ${pulse.cached} cached repositories.`
-        : 'Load stats to fill the portfolio row and table columns.';
-    $('loadStats').disabled = statsBusy || busy || !paths.length;
-    $('refreshStats').disabled = statsBusy || busy || !paths.length || !hasCache;
-    $('loadStats').textContent = statsBusy ? 'Loading…' : 'Load portfolio stats';
-    $('refreshStats').textContent = statsBusy ? 'Refreshing…' : 'Refresh all stats';
+      : statsBusy || busy
+        ? 'Scanning…'
+        : 'Run Scan to fill stats';
   }
   $('machineTitle').innerHTML = other
     ? 'Second machine <span>NOT SCANNED</span>'
@@ -381,11 +362,11 @@ function render() {
       : 'No live scan yet';
   $('currentInsights').hidden = other || !scannedAt;
   $('scan').disabled = other || !paired || busy || statsBusy || !paths.length;
-  $('sync').disabled = other || !scannedAt || busy || statsBusy;
   $('manage').disabled = other || !paired || busy || statsBusy;
   $('connect').textContent = paired ? 'Connection settings' : 'Connect companion';
   if ($('disconnect')) $('disconnect').hidden = !paired;
-  $('scan').innerHTML = busy ? 'Scanning…' : '<span class="arrow">⟳</span> Scan this machine';
+  $('scan').innerHTML =
+    busy || statsBusy ? 'Scanning…' : '<span class="arrow">⟳</span> Scan';
   $('currentMachineNav').textContent = machineName;
   $('currentMachineState').textContent = paired ? 'Companion connected' : 'Not connected';
   $('nextTitle').textContent = `${repos.filter(eligible).length} repositories can receive updates`;
@@ -864,15 +845,12 @@ function paintStats() {
         <p>Combined activity and a side-by-side comparison of tracked repos on this machine.</p>
       </div>
       <div class="actions">
-        <button class="btn" id="statsLoad" ${!paired || statsBusy || !paths.length ? 'disabled' : ''}>
-          ${statsBusy ? 'Loading…' : 'Load portfolio stats'}
-        </button>
         <button
-          class="btn"
-          id="statsRefresh"
-          ${!paired || statsBusy || !paths.length || !hasCache ? 'disabled' : ''}
+          class="btn primary"
+          id="statsScan"
+          ${!paired || busy || statsBusy || !paths.length ? 'disabled' : ''}
         >
-          ${statsBusy ? 'Refreshing…' : 'Refresh all stats'}
+          ${busy || statsBusy ? 'Scanning…' : '<span class="arrow">⟳</span> Scan'}
         </button>
       </div>
     </div>
@@ -880,9 +858,9 @@ function paintStats() {
       !paired
         ? '<div class="callout">Connect the companion to load local Git stats.</div>'
         : !paths.length
-          ? '<div class="callout">Track repositories first, then load portfolio stats.</div>'
+          ? '<div class="callout">Track repositories first, then Scan.</div>'
           : !hasCache
-            ? '<div class="callout">No cached stats yet. Load portfolio stats to fill this page.</div>'
+            ? '<div class="callout">No cached stats yet. Click Scan to refresh sync status and portfolio stats.</div>'
             : ''
     }
     <section class="stats-section">
@@ -976,13 +954,7 @@ function paintStats() {
   bindStatsPage();
 }
 function bindStatsPage() {
-  if ($('statsLoad')) {
-    $('statsLoad').onclick = () => computeStats({ all: true }, 'Loaded portfolio stats');
-  }
-  if ($('statsRefresh')) {
-    $('statsRefresh').onclick = () =>
-      computeStats({ all: true, refresh: true }, 'Refreshed portfolio stats');
-  }
+  if ($('statsScan')) $('statsScan').onclick = runScan;
   document.querySelectorAll('[data-stats-period]').forEach((button) => {
     button.onclick = () => {
       statsPeriod = button.dataset.statsPeriod;
@@ -1216,30 +1188,6 @@ async function syncRoute() {
   render();
   if (detailPath) await ensureDetailStats();
 }
-function sync() {
-  const ready = repos.filter(eligible),
-    skipped = repos.filter((r) => !eligible(r));
-  open(
-    /* HTML */ `
-      <h3 id="dialogTitle">Sync eligibility</h3>
-      <p>Based on your latest scan. Each repository must be rechecked before any future update.</p>
-      <div class="mono">
-        ${ready.length
-          ? ready.map((r) => `↓ ${esc(r.name)} · ${r.behind} commits`).join('<br><br>')
-          : 'No branches eligible for a fast-forward update.'}
-      </div>
-      <h2>Require review</h2>
-      <p style="margin-top:12px">
-        ${skipped.map((r) => `${esc(r.name)}: ${esc(next(r))}`).join('<br>') || 'None'}
-      </p>
-      <div class="callout">
-        Pulling and pushing are not enabled in this version. Scanning fetches remote references and
-        reads status; your checked-out files are not changed.
-      </div>
-    `,
-    'Sync preview',
-  );
-}
 function connect() {
   open(
     /* HTML */ `
@@ -1270,8 +1218,6 @@ function connect() {
     if (!candidate) return;
     $('pair').disabled = true;
     try {
-      repos = [];
-      scannedAt = null;
       statsByPath = {};
       await pairWithToken(candidate);
       render();
@@ -1327,17 +1273,22 @@ function manage() {
   const choices = new Map(
     paths.map((p) => [p, { path: p, name: p.split(/[\\/]/).pop(), checked: true }]),
   );
+  let persistTimer = 0;
   open(
     /* HTML */ `
       <h3 id="dialogTitle">Manage tracked repos</h3>
       <p>
-        Discover within an approved folder, then choose exactly what to track on
-        ${esc(machineName)}.
+        Discover within an approved folder, then tick what to track on ${esc(machineName)}. Changes
+        apply immediately.
       </p>
       <label class="small" for="rootPath">Discovery folder</label>
       <input class="setup-input" id="rootPath" value="${esc(roots[0] || '')}" />
-      <button class="btn" id="discover">Discover repositories</button>
-      <div id="choices" style="margin:20px 0;max-height:360px;overflow:auto"></div>
+      <div class="choice-toolbar">
+        <button class="btn" id="discover">Discover repositories</button>
+        <button class="btn" type="button" id="selectAll">Select all</button>
+        <button class="btn" type="button" id="deselectAll">Deselect all</button>
+      </div>
+      <div id="choices" class="choice-list"></div>
       <label class="small" for="repoPath">Or add a repository by full path</label>
       <input class="setup-input" id="repoPath" placeholder="/path/to/a/repository" />
       <button class="btn" id="addPath">Add path</button>
@@ -1345,13 +1296,31 @@ function manage() {
         Approved folders: ${roots.map(esc).join(', ')}. Restart with another --root to approve an
         additional folder.
       </p>
-      <div style="margin-top:20px">
-        <button class="btn lime" id="saveRepos">Save tracked repos</button>
-      </div>
       <p class="note" role="status" id="settingsError"></p>
     `,
     'Tracking settings',
   );
+  const applySelection = async () => {
+    try {
+      const result = await api('selection', {
+        paths: [...choices.values()].filter((r) => r.checked).map((r) => r.path),
+      });
+      applyStatus(result);
+      statsByPath = Object.fromEntries(
+        Object.entries(statsByPath).filter(([path]) => paths.includes(path)),
+      );
+      render();
+      $('settingsError').textContent = `Tracking ${paths.length} repositor${
+        paths.length === 1 ? 'y' : 'ies'
+      }.`;
+    } catch (e) {
+      $('settingsError').textContent = e.message;
+    }
+  };
+  const persist = () => {
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(applySelection, 120);
+  };
   const draw = () => {
     $('choices').innerHTML =
       [...choices.values()]
@@ -1367,15 +1336,28 @@ function manage() {
           `,
         )
         .join('') || '<p class="small">Discover a folder or add a path.</p>';
-    document
-      .querySelectorAll('[data-choice]')
-      .forEach(
-        (c) =>
-          (c.onchange = () =>
-            ([...choices.values()][Number(c.dataset.choice)].checked = c.checked)),
-      );
+    document.querySelectorAll('[data-choice]').forEach((c) => {
+      c.onchange = () => {
+        [...choices.values()][Number(c.dataset.choice)].checked = c.checked;
+        persist();
+      };
+    });
   };
   draw();
+  $('selectAll').onclick = () => {
+    choices.forEach((r) => {
+      r.checked = true;
+    });
+    draw();
+    persist();
+  };
+  $('deselectAll').onclick = () => {
+    choices.forEach((r) => {
+      r.checked = false;
+    });
+    draw();
+    persist();
+  };
   $('discover').onclick = async () => {
     $('discover').disabled = true;
     try {
@@ -1385,7 +1367,7 @@ function manage() {
       });
       draw();
       $('settingsError').textContent =
-        `Found ${result.repositories.length} repositories. Select the ones you want.`;
+        `Found ${result.repositories.length} repositories. Tick the ones you want.`;
     } catch (e) {
       $('settingsError').textContent = e.message;
     } finally {
@@ -1402,35 +1384,14 @@ function manage() {
       });
       draw();
       $('repoPath').value = '';
-    }
-  };
-  $('saveRepos').onclick = async () => {
-    $('saveRepos').disabled = true;
-    try {
-      const result = await api('selection', {
-        paths: [...choices.values()].filter((r) => r.checked).map((r) => r.path),
-      });
-      paths = result.paths;
-      repos = [];
-      scannedAt = null;
-      statsByPath = Object.fromEntries(
-        Object.entries(statsByPath).filter(([path]) => paths.includes(path)),
-      );
-      render();
-      close();
-      toast('Tracking selection saved on this machine. Click Scan to refresh.');
-    } catch (e) {
-      $('settingsError').textContent = e.message;
-      $('saveRepos').disabled = false;
+      persist();
     }
   };
 }
-$('loadStats').onclick = () =>
-  computeStats({ all: true }, 'Loaded portfolio stats');
-$('refreshStats').onclick = () =>
-  computeStats({ all: true, refresh: true }, 'Refreshed portfolio stats');
-$('scan').onclick = async () => {
+async function runScan() {
+  if (!paired || busy || statsBusy || !paths.length) return;
   busy = true;
+  statsBusy = true;
   render();
   try {
     const result = await api('scan', {});
@@ -1440,20 +1401,25 @@ $('scan').onclick = async () => {
     activity.unshift(
       `Scanned ${repos.length} repositories at ${new Date(scannedAt).toLocaleString()}`,
     );
+    const stats = await api('stats', { all: true, refresh: true });
+    mergeStats(stats.repositories);
+    activity.unshift(
+      `Loaded portfolio stats for ${(stats.repositories || []).length} repositories`,
+    );
+    const errors = repos.filter((r) => r.error).length;
     toast(
-      'Live scan complete. ' +
-        repos.filter((r) => r.error).length +
-        ' repositories need Git configuration or access checks.',
+      `Scan complete · ${(stats.repositories || []).length} stats updated` +
+        (errors ? ` · ${errors} need Git access checks` : ''),
     );
   } catch (e) {
     toast('Scan failed: ' + e.message);
   } finally {
     busy = false;
+    statsBusy = false;
     render();
   }
-};
-$('sync').onclick = sync;
-$('review').onclick = sync;
+}
+$('scan').onclick = runScan;
 $('connect').onclick = connect;
 $('disconnect').onclick = () => {
   clearPairing();

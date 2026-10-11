@@ -8,10 +8,15 @@ Dashboard: https://repo.theana.online · GitHub: https://github.com/longson84/re
 
 Requires Python 3.9+ and Git. No Python packages need installing.
 
-**Local (recommended):** one command starts the companion, serves the dashboard, opens the browser, and pairs automatically:
+**Local (recommended):** from this repo root, one memorable command starts the companion, serves the dashboard, opens the browser, and pairs automatically:
 
 ```sh
-cd /path/to/Projects/repo
+python3 run repo
+```
+
+Same thing, longer form:
+
+```sh
 python3 companion/server.py --root ~/Projects --ui
 ```
 
@@ -29,8 +34,8 @@ The companion listens at `127.0.0.1:48731`. The public website does not run Git;
 
 1. Open **Manage tracked repos**.
 2. Enter a discovery folder within an approved root and click **Discover repositories**.
-3. Tick the repositories you want, or add a repository by its full local path.
-4. **Save tracked repos**, then **Scan this machine**.
+3. Tick the repositories you want (or untick to stop tracking) — changes apply immediately. You can also add a repository by full local path.
+4. **Scan** (sync status + portfolio stats).
 
 Discovery searches up to three nested directory levels and skips repository internals, hidden folders, dependencies, and build output. An individual repository root can be added explicitly when it is deeper.
 
@@ -50,11 +55,12 @@ Other local branches, stashes, ignored files, and databases are not included. A 
 
 Stats are separate from the sync scan. After pairing, the dashboard can load local Git statistics for tracked repositories (commit counts, recent activity, contributors, size, languages, branches, remotes, stashes, and recent churn).
 
-- **Load portfolio stats** computes stats for every tracked path and fills the portfolio sums and table columns.
+- **Scan** refreshes sync status and recomputes portfolio stats for every tracked path.
 - **Stats** (`#/stats`) combines activity across tracked repos (day/week/month chart + top repos) and a sortable comparison board (7d / 30d / all / last commit / 30-day sparkline).
-- Click a repository name or **Open** to open its detail page (`#/repo?<path>`). Missing stats are computed on demand; **Refresh stats** forces a recompute.
+- Click a repository name or **Open** to open its detail page (`#/repo?<path>`). Missing stats are computed on demand; **Refresh stats** on a detail page forces a recompute.
 - The detail page shows volume/age, burst vs quiet weeks, and a commit timeline by **day**, **week**, **month**, and **year**.
 - Results are cached in ignored `.repo-local/stats.json` on that machine. A cache entry is reused for 24 hours while `HEAD` is unchanged; a new commit or an explicit refresh invalidates it. Older cache entries without the timeline are recomputed automatically.
+- The latest **Scan** snapshot is cached in `.repo-local/scan.json`, so a browser refresh restores the last sync table without scanning again.
 - Portfolio totals sum only repositories that already have cached stats. List and detail views share the same cache entry per absolute path. Stats never fetch remotes and are not merged across machines.
 
 ## Local preview and tests

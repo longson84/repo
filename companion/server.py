@@ -670,13 +670,16 @@ class State:
         self.roots = [Path(p).expanduser().resolve(strict=True) for p in roots]
         self.config = Path(config)
         self.stats_path = self.config.parent / "stats.json"
+        self.scan_path = self.config.parent / "scan.json"
         self.lock = threading.Lock()
         self.paths = []
         self.stats_cache = {"version": 1, "repos": {}}
+        self.scan_cache = {"version": 1, "scannedAt": None, "repos": {}}
         if self.config.exists():
             raw = json.loads(self.config.read_text())
             self.paths = [str(self.checked(p)) for p in raw.get("paths", [])]
         self.load_stats_cache()
+        self.load_scan_cache()
 
     def checked(self, value):
         path = Path(value).expanduser().resolve(strict=True)
@@ -732,6 +735,7 @@ class State:
         if kept != self.stats_cache.get("repos", {}):
             self.stats_cache = {"version": 1, "repos": kept}
             self.save_stats_cache()
+        self.prune_scan_cache()
 
     def load_stats_cache(self):
         if not self.stats_path.exists():
@@ -753,6 +757,69 @@ class State:
         temporary.write_text(json.dumps(self.stats_cache, indent=2) + "\n")
         temporary.chmod(0o600)
         temporary.replace(self.stats_path)
+
+    def load_scan_cache(self):
+        if not self.scan_path.exists():
+            self.scan_cache = {"version": 1, "scannedAt": None, "repos": {}}
+            return
+        try:
+            raw = json.loads(self.scan_path.read_text())
+            repos = raw.get("repos", {}) if isinstance(raw, dict) else {}
+            self.scan_cache = {
+                "version": 1,
+                "scannedAt": raw.get("scannedAt") if isinstance(raw, dict) else None,
+                "repos": repos if isinstance(repos, dict) else {},
+            }
+            self.prune_scan_cache(save=False)
+        except (OSError, json.JSONDecodeError, TypeError):
+            self.scan_cache = {"version": 1, "scannedAt": None, "repos": {}}
+
+    def save_scan_cache(self):
+        self.scan_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.scan_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(self.scan_cache, indent=2) + "\n")
+        temporary.chmod(0o600)
+        temporary.replace(self.scan_path)
+
+    def prune_scan_cache(self, *, save=True):
+        kept = {
+            path: payload
+            for path, payload in self.scan_cache.get("repos", {}).items()
+            if path in self.paths
+        }
+        scanned_at = self.scan_cache.get("scannedAt") if kept else None
+        next_cache = {"version": 1, "scannedAt": scanned_at, "repos": kept}
+        if next_cache != self.scan_cache:
+            self.scan_cache = next_cache
+            if save:
+                self.save_scan_cache()
+
+    def remember_scan(self, repositories, scanned_at):
+        repos = {}
+        for item in repositories or []:
+            if not isinstance(item, dict) or not item.get("path"):
+                continue
+            try:
+                path = str(self.checked(item["path"]))
+            except (ValueError, OSError):
+                continue
+            if path in self.paths:
+                stored = dict(item)
+                stored["path"] = path
+                repos[path] = stored
+        self.scan_cache = {
+            "version": 1,
+            "scannedAt": scanned_at,
+            "repos": repos,
+        }
+        self.save_scan_cache()
+
+    def last_scan_payload(self):
+        repos = self.scan_cache.get("repos", {})
+        return {
+            "scannedAt": self.scan_cache.get("scannedAt") if repos else None,
+            "repositories": [repos[path] for path in self.paths if path in repos],
+        }
 
     def cached_stats(self):
         repos = self.stats_cache.get("repos", {})
@@ -867,19 +934,22 @@ class Handler(BaseHTTPRequestHandler):
                     "machine": socket.gethostname(),
                     "roots": [str(p) for p in state.roots],
                     "paths": state.paths,
+                    **state.last_scan_payload(),
                 }
             elif self.command == "POST" and self.path == "/api/discover":
                 response = {"repositories": state.discover(data["root"])}
             elif self.command == "POST" and self.path == "/api/selection":
                 state.select(data["paths"])
-                response = {"paths": state.paths}
+                response = {"paths": state.paths, **state.last_scan_payload()}
             elif self.command == "POST" and self.path == "/api/scan":
                 paths = [str(state.checked(p)) for p in state.paths]
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     repos = list(pool.map(inspect_repo, paths))
+                scanned_at = datetime.now(timezone.utc).isoformat()
+                state.remember_scan(repos, scanned_at)
                 response = {
                     "machine": socket.gethostname(),
-                    "scannedAt": datetime.now(timezone.utc).isoformat(),
+                    "scannedAt": scanned_at,
                     "repositories": repos,
                 }
             elif self.command == "GET" and self.path == "/api/stats":

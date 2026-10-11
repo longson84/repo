@@ -971,7 +971,7 @@
         display: flex;
       }
       .drawer {
-        width: 470px;
+        width: 520px;
         max-width: 100%;
         background: #fbfcf8;
         padding: 32px;
@@ -1160,12 +1160,35 @@
         margin: 10px 0 15px;
         background: white;
       }
+      .choice-toolbar {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 8px;
+        margin: 12px 0 10px;
+      }
+      .choice-toolbar .btn {
+        flex: 0 1 auto;
+        white-space: nowrap;
+      }
+      .choice-list {
+        margin: 0 0 20px;
+        max-height: min(70vh, 640px);
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 4px 12px;
+        background: #fff;
+      }
       .repo-choice {
         display: flex;
         gap: 12px;
         padding: 12px 0;
         border-bottom: 1px solid var(--line);
         overflow-wrap: anywhere;
+      }
+      .repo-choice:last-child {
+        border-bottom: 0;
       }
       .repo-choice input {
         flex-shrink: 0;
@@ -1250,13 +1273,9 @@
           </div>
           <div class="actions">
             <button class="btn" id="manage">Manage tracked repos</button>
-            <button class="btn" id="sync">
-              Preview sync
-              <span style="margin-left: 6px">↗</span>
-            </button>
             <button class="btn primary" id="scan">
               <span class="arrow">⟳</span>
-              Scan this machine
+              Scan
             </button>
           </div>
         </div>
@@ -1344,11 +1363,6 @@
             <div class="stat-bottom" id="statsCoverageLabel">Cached / tracked</div>
           </div>
         </div>
-        <div class="portfolio-actions" id="portfolioActions" hidden>
-          <button class="btn" id="loadStats">Load portfolio stats</button>
-          <button class="btn" id="refreshStats">Refresh all stats</button>
-          <span class="small" id="statsMeta"></span>
-        </div>
         <div class="section-head">
           <h2>
             Repositories
@@ -1432,9 +1446,6 @@
                 <p id="nextText">Choose repositories and scan your current machine.</p>
               </div>
             </div>
-            <button class="text-btn" id="review" style="margin-top: 17px; padding: 0">
-              Review the sync plan →
-            </button>
           </section>
         </div>
         <footer class="footer">

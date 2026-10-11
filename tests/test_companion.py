@@ -240,6 +240,24 @@ class CompanionTests(unittest.TestCase):
         self.assertNotEqual(rotated, first)
         self.assertEqual(api.load_or_create_token(path), rotated)
 
+    def test_last_scan_persists_across_reload(self):
+        api = self.api()
+        repo = self.repo("scanned")
+        config = self.root / "settings.json"
+        state = api.State([self.root], config)
+        state.select([str(repo)])
+        payload = api.inspect_repo(str(repo), False)
+        state.remember_scan([payload], "2026-10-11T00:00:00+00:00")
+        loaded = api.State([self.root], config)
+        snap = loaded.last_scan_payload()
+        self.assertEqual(snap["scannedAt"], "2026-10-11T00:00:00+00:00")
+        self.assertEqual(len(snap["repositories"]), 1)
+        self.assertEqual(snap["repositories"][0]["path"], str(repo.resolve()))
+        state.select([])
+        empty = api.State([self.root], config)
+        self.assertEqual(empty.last_scan_payload()["repositories"], [])
+        self.assertIsNone(empty.last_scan_payload()["scannedAt"])
+
     def test_start_ui_server_serves_dist(self):
         api = self.api()
         dist = self.root / "dist"
