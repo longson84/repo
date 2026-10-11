@@ -1,7 +1,7 @@
 # Project Grouping UI — Design Specification
 
 **Date:** 2026-10-11  
-**Status:** Draft for review  
+**Status:** Approved
 **Product:** Theana / Repo local dashboard
 
 ## Intent
