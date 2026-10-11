@@ -17,9 +17,7 @@ from ..identity import conversation_key, execution_key
 PARSER_NAME = "antigravity-sqlite-protobuf"
 PARSER_VERSION = 2
 
-USER_REQUEST_RE = re.compile(
-    r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.S | re.I
-)
+USER_REQUEST_RE = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.S | re.I)
 
 # Model enum in steps.metadata (top-level field 11 / usage field 1).
 MODEL_ENUM = {
@@ -117,9 +115,7 @@ def parse_usage_metadata(meta: bytes) -> Optional[dict[str, Any]]:
     if usage_blob is None:
         return None
 
-    inner = {
-        f: v for f, w, v in parse_protobuf_fields(usage_blob) if w == 0
-    }
+    inner = {f: v for f, w, v in parse_protobuf_fields(usage_blob) if w == 0}
     if model_id is None and isinstance(inner.get(1), int):
         model_id = int(inner[1])
     input_tokens = int(inner.get(2) or 0)
@@ -161,7 +157,9 @@ def _iso_from_sqlite(value: Optional[str]) -> Optional[str]:
         return None
     try:
         # "2026-09-12 06:47:55.261614+00:00"
-        dt = datetime.fromisoformat(value.replace(" ", "T") if "T" not in value else value)
+        dt = datetime.fromisoformat(
+            value.replace(" ", "T") if "T" not in value else value
+        )
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.isoformat()
@@ -190,7 +188,11 @@ def _preview_and_cwd_from_transcript(path: Path) -> tuple[Optional[str], Optiona
                 except json.JSONDecodeError:
                     continue
                 content = row.get("content")
-                if preview is None and row.get("type") == "USER_INPUT" and isinstance(content, str):
+                if (
+                    preview is None
+                    and row.get("type") == "USER_INPUT"
+                    and isinstance(content, str)
+                ):
                     match = USER_REQUEST_RE.search(content)
                     text = match.group(1) if match else content
                     preview = clip(text)
@@ -203,9 +205,7 @@ def _preview_and_cwd_from_transcript(path: Path) -> tuple[Optional[str], Optiona
                             raw = raw[1:-1]
                         if "/Projects/" in raw or "/projects/" in raw:
                             # trim to project root
-                            m = re.match(
-                                r"(.*/(?:Projects|projects)/[^/]+)", raw
-                            )
+                            m = re.match(r"(.*/(?:Projects|projects)/[^/]+)", raw)
                             if m:
                                 cwd = m.group(1)
                                 break
@@ -263,9 +263,7 @@ def list_sessions(root: Path, source_id: str, surface: str) -> list[dict]:
             cwd = _workspace_from_uris(workspace_uris)
             conv = root / "conversations" / f"{cid}.db"
             brain = root / "brain" / cid
-            transcript = (
-                brain / ".system_generated" / "logs" / "transcript_full.jsonl"
-            )
+            transcript = brain / ".system_generated" / "logs" / "transcript_full.jsonl"
             t_preview, t_cwd = _preview_and_cwd_from_transcript(transcript)
             cwd = cwd or t_cwd
             size = _size(conv) + _size(transcript)
@@ -306,9 +304,7 @@ def list_sessions(root: Path, source_id: str, surface: str) -> list[dict]:
             if cid in by_id:
                 continue
             brain = root / "brain" / cid
-            transcript = (
-                brain / ".system_generated" / "logs" / "transcript_full.jsonl"
-            )
+            transcript = brain / ".system_generated" / "logs" / "transcript_full.jsonl"
             t_preview, t_cwd = _preview_and_cwd_from_transcript(transcript)
             by_id[cid] = summary(
                 id=cid,
@@ -383,7 +379,14 @@ def usage_files(root: Path, source_id: str, surface: str) -> list[dict[str, Any]
             continue
         dependencies = []
         summaries_db = root / "conversation_summaries.db"
-        transcript = root / "brain" / db.stem / ".system_generated" / "logs" / "transcript_full.jsonl"
+        transcript = (
+            root
+            / "brain"
+            / db.stem
+            / ".system_generated"
+            / "logs"
+            / "transcript_full.jsonl"
+        )
         for dependency in (summaries_db, transcript):
             try:
                 dependency_stat = dependency.stat()
@@ -423,13 +426,24 @@ def parse_usage_file(descriptor: Mapping[str, Any]) -> dict[str, Any]:
     session_id = db.stem
     project = descriptor.get("project")
     if project is None:
-        transcript = root / "brain" / session_id / ".system_generated" / "logs" / "transcript_full.jsonl"
+        transcript = (
+            root
+            / "brain"
+            / session_id
+            / ".system_generated"
+            / "logs"
+            / "transcript_full.jsonl"
+        )
         _, cwd = _preview_and_cwd_from_transcript(transcript)
         project = project_name(cwd) or "unknown"
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     except sqlite3.Error:
-        return {"events": [], "reconciliation": [], "warnings": [{"code": "read_error", "source_id": source_id}]}
+        return {
+            "events": [],
+            "reconciliation": [],
+            "warnings": [{"code": "read_error", "source_id": source_id}],
+        }
     try:
         try:
             rows = con.execute(
@@ -441,7 +455,9 @@ def parse_usage_file(descriptor: Mapping[str, Any]) -> dict[str, Any]:
     finally:
         con.close()
     try:
-        fallback_date = datetime.fromtimestamp(db.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%d")
+        fallback_date = datetime.fromtimestamp(
+            db.stat().st_mtime, tz=timezone.utc
+        ).strftime("%Y-%m-%d")
     except OSError:
         fallback_date = None
     for step_index, meta in rows:
@@ -451,41 +467,50 @@ def parse_usage_file(descriptor: Mapping[str, Any]) -> dict[str, Any]:
         if not parsed:
             continue
         event = {
-                "event_key": f"antigravity:{session_id}:step:{step_index}",
-                "session_id": session_id,
-                "conversation_key": conversation_key("antigravity", session_id),
-                "execution_key": execution_key(source_id, session_id),
-                "execution_kind": "root",
-                "source_id": source_id,
-                "tool": "antigravity",
-                "surface": surface,
-                "provider": "antigravity",
-                "model": parsed["model"],
-                "model_id": parsed.get("model_id"),
-                "project": project,
-                "date": parsed.get("date") or fallback_date,
-                "input_tokens": parsed["input_tokens"],
-                "cached_tokens": parsed["cached_tokens"],
-                "output_tokens": parsed["output_tokens"],
-                "cache_write_tokens": 0,
-                "thinking_tokens": parsed.get("thinking_tokens") or 0,
-                "visible_tokens": parsed.get("visible_tokens") or 0,
-                "parser": PARSER_NAME,
-                "parser_version": PARSER_VERSION,
-                "confidence": "provider",
+            "event_key": f"antigravity:{session_id}:step:{step_index}",
+            "session_id": session_id,
+            "conversation_key": conversation_key("antigravity", session_id),
+            "execution_key": execution_key(source_id, session_id),
+            "execution_kind": "root",
+            "source_id": source_id,
+            "tool": "antigravity",
+            "surface": surface,
+            "provider": "antigravity",
+            "model": parsed["model"],
+            "model_id": parsed.get("model_id"),
+            "project": project,
+            "date": parsed.get("date") or fallback_date,
+            "input_tokens": parsed["input_tokens"],
+            "cached_tokens": parsed["cached_tokens"],
+            "output_tokens": parsed["output_tokens"],
+            "cache_write_tokens": 0,
+            "thinking_tokens": parsed.get("thinking_tokens") or 0,
+            "visible_tokens": parsed.get("visible_tokens") or 0,
+            "parser": PARSER_NAME,
+            "parser_version": PARSER_VERSION,
+            "confidence": "provider",
         }
         events.append(event)
         component_total = event["thinking_tokens"] + event["visible_tokens"]
         if component_total and component_total != event["output_tokens"]:
             warnings.append(
-                {"code": "output_invariant_mismatch", "source_id": source_id, "session_id": session_id, "event_key": event["event_key"]}
+                {
+                    "code": "output_invariant_mismatch",
+                    "source_id": source_id,
+                    "session_id": session_id,
+                    "event_key": event["event_key"],
+                }
             )
     return {"events": events, "reconciliation": [], "warnings": warnings}
 
 
 def collect_usage(root: Path, source_id: str, surface: str) -> dict[str, Any]:
     """Collect normalized per-model-step events and parser warnings."""
-    result: dict[str, list[dict[str, Any]]] = {"events": [], "reconciliation": [], "warnings": []}
+    result: dict[str, list[dict[str, Any]]] = {
+        "events": [],
+        "reconciliation": [],
+        "warnings": [],
+    }
     for descriptor in usage_files(root, source_id, surface):
         batch = descriptor["parse"]()
         for key in result:
@@ -493,8 +518,6 @@ def collect_usage(root: Path, source_id: str, surface: str) -> dict[str, Any]:
     return result
 
 
-def iter_usage(
-    root: Path, source_id: str, surface: str
-) -> Iterator[dict[str, Any]]:
+def iter_usage(root: Path, source_id: str, surface: str) -> Iterator[dict[str, Any]]:
     """Yield normalized per-model-step usage events."""
     yield from collect_usage(root, source_id, surface)["events"]

@@ -43,7 +43,9 @@ def _first_user_preview(path: Path) -> Optional[str]:
                 except json.JSONDecodeError:
                     continue
                 typ = row.get("type")
-                payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+                payload = (
+                    row.get("payload") if isinstance(row.get("payload"), dict) else {}
+                )
                 if typ in {"user_message", "user"} or (
                     typ == "event_msg" and payload.get("type") == "user_message"
                 ):
@@ -343,69 +345,73 @@ def parse_usage_file(descriptor: Mapping[str, Any]) -> dict[str, Any]:
     try:
         with path.open(encoding="utf-8", errors="replace") as handle:
             for line_number, line in enumerate(handle, start=1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        warnings.append(
-                            {
-                                "code": "malformed_json",
-                                "source_id": source_id,
-                                "execution_id": execution_id,
-                                "line": line_number,
-                            }
-                        )
-                        continue
-                    typ = row.get("type")
-                    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-                    if typ == "turn_context":
-                        if isinstance(payload.get("model"), str):
-                            model = payload["model"]
-                        if cwd is None and isinstance(payload.get("cwd"), str):
-                            cwd = payload["cwd"]
-                            project = project_name(cwd) or project
-                        continue
-                    if typ != "event_msg" or payload.get("type") != "token_count":
-                        continue
-                    info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
-                    total = info.get("total_token_usage")
-                    if isinstance(total, dict):
-                        latest_total = _normalized_tokens(total)
-                    last = info.get("last_token_usage")
-                    if not isinstance(last, dict):
-                        continue
-                    normalized = _normalized_tokens(last)
-                    if not any(normalized.values()):
-                        continue
-                    ordinal += 1
-                    event_sum.update(normalized)
-                    events.append(
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    warnings.append(
                         {
-                            "event_key": f"codex:{execution_id}:token-count:{ordinal}",
-                            "session_id": root_id,
-                            "conversation_key": conversation_key("codex", root_id),
-                            "execution_key": execution_key(source_id, execution_id),
-                            "execution_kind": meta.get("kind") or "unknown",
+                            "code": "malformed_json",
                             "source_id": source_id,
-                            "tool": "codex",
-                            "surface": surface_for(meta, all_meta),
-                            "provider": "openai",
-                            "model": model,
-                            "project": project,
-                            "cwd": cwd,
-                            "date": _date_from_ts(row.get("timestamp")),
-                            "timestamp": row.get("timestamp"),
-                            **normalized,
-                            "thinking_tokens": int(
-                                last.get("reasoning_output_tokens") or 0
-                            ),
-                            "parser": PARSER_NAME,
-                            "parser_version": PARSER_VERSION,
-                            "confidence": "provider",
+                            "execution_id": execution_id,
+                            "line": line_number,
                         }
                     )
+                    continue
+                typ = row.get("type")
+                payload = (
+                    row.get("payload") if isinstance(row.get("payload"), dict) else {}
+                )
+                if typ == "turn_context":
+                    if isinstance(payload.get("model"), str):
+                        model = payload["model"]
+                    if cwd is None and isinstance(payload.get("cwd"), str):
+                        cwd = payload["cwd"]
+                        project = project_name(cwd) or project
+                    continue
+                if typ != "event_msg" or payload.get("type") != "token_count":
+                    continue
+                info = (
+                    payload.get("info") if isinstance(payload.get("info"), dict) else {}
+                )
+                total = info.get("total_token_usage")
+                if isinstance(total, dict):
+                    latest_total = _normalized_tokens(total)
+                last = info.get("last_token_usage")
+                if not isinstance(last, dict):
+                    continue
+                normalized = _normalized_tokens(last)
+                if not any(normalized.values()):
+                    continue
+                ordinal += 1
+                event_sum.update(normalized)
+                events.append(
+                    {
+                        "event_key": f"codex:{execution_id}:token-count:{ordinal}",
+                        "session_id": root_id,
+                        "conversation_key": conversation_key("codex", root_id),
+                        "execution_key": execution_key(source_id, execution_id),
+                        "execution_kind": meta.get("kind") or "unknown",
+                        "source_id": source_id,
+                        "tool": "codex",
+                        "surface": surface_for(meta, all_meta),
+                        "provider": "openai",
+                        "model": model,
+                        "project": project,
+                        "cwd": cwd,
+                        "date": _date_from_ts(row.get("timestamp")),
+                        "timestamp": row.get("timestamp"),
+                        **normalized,
+                        "thinking_tokens": int(
+                            last.get("reasoning_output_tokens") or 0
+                        ),
+                        "parser": PARSER_NAME,
+                        "parser_version": PARSER_VERSION,
+                        "confidence": "provider",
+                    }
+                )
     except OSError:
         warnings.append(
             {

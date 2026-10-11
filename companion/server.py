@@ -9,7 +9,11 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from functools import partial
-from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import (
+    BaseHTTPRequestHandler,
+    SimpleHTTPRequestHandler,
+    ThreadingHTTPServer,
+)
 import hmac
 import json
 import os
@@ -222,6 +226,7 @@ def parse_scc_json(payload):
         "locByLanguage": by_language[:20],
     }
 
+
 def collect_scc_loc(path, timeout=120):
     """Current-tree LOC via scc (code / comment / blank), excluding docs/config noise."""
     try:
@@ -369,7 +374,9 @@ def commit_series(iso_dates, now=None):
         by_month[day.strftime("%Y-%m")] += 1
         by_year[str(day.year)] += 1
 
-    day_keys = [(today - timedelta(days=offset)).isoformat() for offset in range(29, -1, -1)]
+    day_keys = [
+        (today - timedelta(days=offset)).isoformat() for offset in range(29, -1, -1)
+    ]
     monday = today - timedelta(days=today.weekday())
     week_keys = []
     for offset in range(25, -1, -1):
@@ -852,7 +859,9 @@ def collect_stats(path):
                 size = 0
             total += size
             suffix = Path(relative).suffix.lower() or "(none)"
-            entry = languages.setdefault(suffix, {"extension": suffix, "files": 0, "bytes": 0})
+            entry = languages.setdefault(
+                suffix, {"extension": suffix, "files": 0, "bytes": 0}
+            )
             entry["files"] += 1
             entry["bytes"] += size
             top = relative.split("/", 1)[0]
@@ -864,7 +873,9 @@ def collect_stats(path):
         )[:12]
         result["largestDirs"] = [
             {"name": name, "bytes": size}
-            for name, size in sorted(dirs.items(), key=lambda item: item[1], reverse=True)[:5]
+            for name, size in sorted(
+                dirs.items(), key=lambda item: item[1], reverse=True
+            )[:5]
         ]
     else:
         note("working tree")
@@ -920,7 +931,11 @@ def stats_fresh(cached, path):
         return False
     for key in ("linesTotal", "lines7d", "lines30d", "lines90d"):
         value = cached.get(key)
-        if not isinstance(value, dict) or "additions" not in value or "deletions" not in value:
+        if (
+            not isinstance(value, dict)
+            or "additions" not in value
+            or "deletions" not in value
+        ):
             return False
     if cached.get("locCode") is None:
         return False

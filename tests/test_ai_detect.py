@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import pathlib
+import sqlite3
 import tempfile
 import unittest
 
@@ -70,7 +71,7 @@ class DetectTests(unittest.TestCase):
         (base / "sess.jsonl").write_text("{}\n")
         sources = catalog.resolve_sources(env={}, home=self.home)
         payload = detect.detect_all(sources)
-        self.assertEqual(payload["version"], 1)
+        self.assertEqual(payload["version"], 2)
         self.assertIn("detectedAt", payload)
         found = [s for s in payload["sources"] if s["id"] == "claude.code"][0]
         self.assertTrue(found["exists"])
@@ -79,6 +80,95 @@ class DetectTests(unittest.TestCase):
         detect.save_detect_cache(cache_path, payload)
         loaded = detect.load_detect_cache(cache_path)
         self.assertEqual(loaded["summary"]["found"], payload["summary"]["found"])
+
+    def test_detect_separates_stores_representations_conversations_and_executions(self):
+        root = self.home / ".claude"
+        project = root / "projects" / "demo"
+        child = project / "session-1" / "subagents"
+        child.mkdir(parents=True)
+        (project / "session-1.jsonl").write_text("{}\n")
+        (child / "agent-a.jsonl").write_text("{}\n")
+        (child / "agent-b.jsonl").write_text("{}\n")
+        source = {
+            "id": "claude.code",
+            "tool": "claude-code",
+            "surface": "cli",
+            "path": str(root),
+            "notes": "",
+        }
+
+        payload = detect.detect_all([source])
+
+        detail = payload["sources"][0]
+        self.assertEqual(detail["representation_estimate"], 3)
+        self.assertEqual(detail["conversation_estimate"], 1)
+        self.assertEqual(detail["execution_estimate"], 3)
+        self.assertEqual(payload["summary"]["stores_found"], 1)
+        self.assertEqual(payload["summary"]["conversation_estimate"], 1)
+        self.assertEqual(payload["summary"]["execution_estimate"], 3)
+
+    def test_cursor_ide_database_presence_is_not_one_session(self):
+        root = self.home / "Cursor"
+        state = root / "User" / "globalStorage" / "state.vscdb"
+        state.parent.mkdir(parents=True)
+        state.write_bytes(b"sqlite")
+        result = detect.detect_one(
+            {
+                "id": "cursor.ide",
+                "tool": "cursor",
+                "surface": "ide",
+                "path": str(root),
+                "notes": "",
+            }
+        )
+        self.assertEqual(result["representation_estimate"], 1)
+        self.assertIsNone(result["conversation_estimate"])
+        self.assertIsNone(result["session_estimate"])
+
+    def test_detect_does_not_sum_overlapping_cursor_representations(self):
+        cli = self.home / "cli"
+        db = cli / "workspace" / "shared-id" / "store.db"
+        db.parent.mkdir(parents=True)
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE meta(value BLOB)")
+        con.execute(
+            "INSERT INTO meta VALUES (?)",
+            (json.dumps({"agentId": "shared-id"}),),
+        )
+        con.commit()
+        con.close()
+        projects = self.home / "projects"
+        transcript = (
+            projects / "demo" / "agent-transcripts" / "shared-id" / "shared-id.jsonl"
+        )
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text("{}\n")
+        payload = detect.detect_all(
+            [
+                {
+                    "id": "cursor.cli",
+                    "tool": "cursor",
+                    "surface": "cli",
+                    "path": str(cli),
+                    "notes": "",
+                },
+                {
+                    "id": "cursor.agent-transcripts",
+                    "tool": "cursor",
+                    "surface": "unknown",
+                    "path": str(projects),
+                    "notes": "",
+                },
+            ]
+        )
+        self.assertEqual(payload["summary"]["representation_estimate"], 2)
+        self.assertEqual(payload["summary"]["conversation_estimate"], 1)
+        self.assertEqual(payload["summary"]["execution_estimate"], 1)
+
+    def test_old_detect_cache_is_ignored(self):
+        path = self.home / "detect.json"
+        path.write_text('{"version":1,"sources":[]}')
+        self.assertIsNone(detect.load_detect_cache(path))
 
 
 if __name__ == "__main__":

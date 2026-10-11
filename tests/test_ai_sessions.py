@@ -150,7 +150,9 @@ class SessionAdapterTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["id"], session_id)
-        self.assertEqual(rows[0]["conversation_key"], f"claude-code:conversation:{session_id}")
+        self.assertEqual(
+            rows[0]["conversation_key"], f"claude-code:conversation:{session_id}"
+        )
         self.assertEqual(rows[0]["execution_count"], 3)
         self.assertEqual(
             {item["kind"] for item in rows[0]["executions"]}, {"root", "child"}
@@ -340,7 +342,9 @@ class SessionAdapterTests(unittest.TestCase):
             ["cursor.agent-transcripts", "cursor.cli"],
         )
 
-    def test_antigravity_same_provider_uuid_merges_sources_without_duplicate_session(self):
+    def test_antigravity_same_provider_uuid_merges_sources_without_duplicate_session(
+        self,
+    ):
         conversation_id = "antigravity-shared"
         for relative in ("antigravity", "antigravity-cli"):
             conversations = self.home / ".gemini" / relative / "conversations"
@@ -366,7 +370,9 @@ class SessionAdapterTests(unittest.TestCase):
         claude = self.home / ".claude" / "projects" / "demo" / f"{shared_id}.jsonl"
         claude.parent.mkdir(parents=True)
         claude.write_text(
-            json.dumps({"type": "user", "sessionId": shared_id, "message": {"content": "x"}})
+            json.dumps(
+                {"type": "user", "sessionId": shared_id, "message": {"content": "x"}}
+            )
             + "\n"
         )
         codex_path = (
@@ -384,7 +390,9 @@ class SessionAdapterTests(unittest.TestCase):
         )
         rows = sessions_mod.collect_sessions(home=self.home, env={})
 
-        with self.assertRaisesRegex(ValueError, "Ambiguous session id.*claude-code.*codex"):
+        with self.assertRaisesRegex(
+            ValueError, "Ambiguous session id.*claude-code.*codex"
+        ):
             sessions_mod.resolve_conversation_selectors(
                 rows,
                 conversation_keys=None,
@@ -392,13 +400,17 @@ class SessionAdapterTests(unittest.TestCase):
                 legacy_session_ids=[shared_id],
             )
 
-    def test_session_response_reports_conversation_execution_and_representation_counts(self):
+    def test_session_response_reports_conversation_execution_and_representation_counts(
+        self,
+    ):
         project = self.home / ".claude" / "projects" / "demo"
         parent = project / "session-1.jsonl"
         child = project / "session-1" / "subagents" / "agent-1.jsonl"
         child.parent.mkdir(parents=True)
         parent.write_text(
-            json.dumps({"type": "user", "sessionId": "session-1", "message": {"content": "x"}})
+            json.dumps(
+                {"type": "user", "sessionId": "session-1", "message": {"content": "x"}}
+            )
             + "\n"
         )
         child.write_text(
@@ -435,7 +447,7 @@ class SessionAdapterTests(unittest.TestCase):
                         "type": "user",
                         "cwd": f"/Users/demo/Projects/{name}",
                         "sessionId": f"id-{name}",
-                        "timestamp": f"2026-09-0{i+1}T10:00:00.000Z",
+                        "timestamp": f"2026-09-0{i + 1}T10:00:00.000Z",
                         "message": {"content": f"work on {name}"},
                     }
                 )

@@ -4,9 +4,155 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
+
+
+def _cursor_cli_id(db: Path) -> str:
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        row = con.execute("SELECT value FROM meta LIMIT 1").fetchone()
+        con.close()
+    except sqlite3.Error:
+        return db.parent.name
+    if not row:
+        return db.parent.name
+    raw = row[0]
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8")
+        except UnicodeError:
+            return db.parent.name
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            try:
+                data = json.loads(bytes.fromhex(raw).decode("utf-8"))
+            except (ValueError, UnicodeError, json.JSONDecodeError):
+                return db.parent.name
+        if isinstance(data, dict) and data.get("agentId"):
+            return str(data["agentId"])
+    return db.parent.name
+
+
+def _inventory(source_id: str, path: Path) -> dict:
+    """Return representation count and canonical identities without reading content."""
+    conversations: Optional[set[str]] = set()
+    executions: Optional[set[str]] = set()
+    representations = 0
+    if source_id.startswith("antigravity."):
+        ids = set()
+        brain = path / "brain"
+        if brain.is_dir():
+            ids.update(
+                item.name
+                for item in brain.iterdir()
+                if item.is_dir()
+                and item.name != "tempmediaStorage"
+                and not item.name.startswith(".")
+            )
+            representations += _count_rglob(brain, "transcript_full.jsonl")
+        conv_dir = path / "conversations"
+        dbs = list(conv_dir.glob("*.db")) if conv_dir.is_dir() else []
+        ids.update(item.stem for item in dbs)
+        representations += (
+            len(dbs)
+            + len(
+                [item for item in brain.iterdir() if item.is_dir() and item.name in ids]
+            )
+            if brain.is_dir()
+            else len(dbs)
+        )
+        conversations = {f"antigravity:{item}" for item in ids}
+        executions = {f"antigravity:{item}" for item in ids}
+    elif source_id == "claude.code":
+        files = (
+            list((path / "projects").rglob("*.jsonl"))
+            if (path / "projects").is_dir()
+            else []
+        )
+        files = [item for item in files if not item.name.startswith(".")]
+        representations = len(files)
+        for item in files:
+            if "subagents" in item.parts:
+                index = item.parts.index("subagents")
+                conversation_id = item.parts[index - 1]
+                execution_id = item.stem
+            else:
+                conversation_id = execution_id = item.stem
+            conversations.add(f"claude-code:{conversation_id}")
+            executions.add(f"claude-code:{conversation_id}:{execution_id}")
+    elif source_id == "codex.home":
+        files = (
+            list((path / "sessions").rglob("rollout-*.jsonl"))
+            if (path / "sessions").is_dir()
+            else []
+        )
+        representations = len(files)
+        parents: dict[str, Optional[str]] = {}
+        for item in files:
+            execution_id = item.stem
+            parent_id = None
+            try:
+                with item.open(encoding="utf-8", errors="replace") as handle:
+                    for line in handle:
+                        row = json.loads(line)
+                        if row.get("type") == "session_meta" and isinstance(
+                            row.get("payload"), dict
+                        ):
+                            payload = row["payload"]
+                            execution_id = str(payload.get("id") or execution_id)
+                            parent_id = payload.get("parent_thread_id") or payload.get(
+                                "forked_from_id"
+                            )
+                            break
+            except (OSError, json.JSONDecodeError):
+                pass
+            parents[execution_id] = str(parent_id) if parent_id else None
+        for execution_id in parents:
+            root_id = execution_id
+            seen = set()
+            while parents.get(root_id) and root_id not in seen:
+                seen.add(root_id)
+                candidate = str(parents[root_id])
+                if candidate not in parents:
+                    break
+                root_id = candidate
+            conversations.add(f"codex:{root_id}")
+            executions.add(f"codex:{execution_id}")
+    elif source_id == "cursor.cli":
+        files = list(path.rglob("store.db")) if path.is_dir() else []
+        representations = len(files)
+        ids = {_cursor_cli_id(item) for item in files}
+        conversations = {f"cursor:{item}" for item in ids}
+        executions = {f"cursor:{item}" for item in ids}
+    elif source_id == "cursor.agent-transcripts":
+        files = list(path.rglob("agent-transcripts/*/*.jsonl")) if path.is_dir() else []
+        representations = len(files)
+        ids = {item.stem for item in files if not item.name.startswith(".")}
+        conversations = {f"cursor:{item}" for item in ids}
+        executions = {f"cursor:{item}" for item in ids}
+    elif source_id == "cursor.ide":
+        state = path / "User" / "globalStorage" / "state.vscdb"
+        representations = 1 if state.is_file() else 0
+        conversations = executions = None
+    elif source_id == "claude.desktop":
+        local_agent = path / "local-agent-mode-sessions"
+        representations = _count_dirs(local_agent) if local_agent.is_dir() else 0
+        conversations = executions = None
+    elif source_id == "codex.app-support":
+        representations = 1 if path.exists() else 0
+        conversations = executions = None
+    else:
+        conversations = executions = None
+    return {
+        "representations": representations,
+        "conversations": conversations,
+        "executions": executions,
+    }
 
 
 def directory_size(path: Path, *, max_entries: int = 250_000) -> int:
@@ -60,7 +206,9 @@ def _count_dirs(path: Path, *, exclude: Iterable[str] = ()) -> int:
     skip = set(exclude)
     try:
         return sum(
-            1 for p in path.iterdir() if p.is_dir() and p.name not in skip and not p.name.startswith(".")
+            1
+            for p in path.iterdir()
+            if p.is_dir() and p.name not in skip and not p.name.startswith(".")
         )
     except OSError:
         return 0
@@ -141,6 +289,23 @@ def detect_one(source: dict) -> dict:
     extra = ""
     if exists:
         estimate, extra = estimate_sessions(source["id"], path)
+    inventory = (
+        _inventory(source["id"], path)
+        if exists
+        else {
+            "representations": 0,
+            "conversations": set(),
+            "executions": set(),
+        }
+    )
+    conversation_estimate = (
+        len(inventory["conversations"])
+        if inventory["conversations"] is not None
+        else None
+    )
+    execution_estimate = (
+        len(inventory["executions"]) if inventory["executions"] is not None else None
+    )
     notes = source.get("notes") or ""
     if extra:
         notes = f"{notes}; {extra}" if notes else extra
@@ -160,7 +325,11 @@ def detect_one(source: dict) -> dict:
             else "missing"
         ),
         "size_bytes": size,
-        "session_estimate": estimate,
+        "session_estimate": conversation_estimate,
+        "conversation_estimate": conversation_estimate,
+        "execution_estimate": execution_estimate,
+        "representation_estimate": inventory["representations"],
+        "details": {"raw_note": extra},
         "notes": notes,
         "supports": {
             "sessions": source["id"]
@@ -208,18 +377,36 @@ def detect_one(source: dict) -> dict:
 def detect_all(sources: list[dict]) -> dict:
     detected_at = datetime.now(timezone.utc).isoformat()
     results = [detect_one(source) for source in sources]
+    conversation_keys = set()
+    execution_keys = set()
+    for source, result in zip(sources, results):
+        if not result["exists"]:
+            continue
+        inventory = _inventory(source["id"], Path(source["path"]))
+        if inventory["conversations"] is not None:
+            conversation_keys.update(inventory["conversations"])
+        if inventory["executions"] is not None:
+            execution_keys.update(inventory["executions"])
+    stores_found = sum(1 for item in results if item["exists"])
+    representation_estimate = sum(
+        int(item.get("representation_estimate") or 0)
+        for item in results
+        if item["exists"]
+    )
+    conversation_estimate = len(conversation_keys)
+    execution_estimate = len(execution_keys)
     return {
-        "version": 1,
+        "version": 2,
         "detectedAt": detected_at,
         "sources": results,
         "summary": {
             "total": len(results),
-            "found": sum(1 for item in results if item["exists"]),
-            "sessions": sum(
-                item["session_estimate"] or 0
-                for item in results
-                if item["exists"] and item["session_estimate"]
-            ),
+            "stores_found": stores_found,
+            "representation_estimate": representation_estimate,
+            "conversation_estimate": conversation_estimate,
+            "execution_estimate": execution_estimate,
+            "found": stores_found,
+            "sessions": conversation_estimate,
         },
     }
 
@@ -231,7 +418,11 @@ def load_detect_cache(path: Path) -> Optional[dict]:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError):
         return None
-    if not isinstance(raw, dict) or not isinstance(raw.get("sources"), list):
+    if (
+        not isinstance(raw, dict)
+        or raw.get("version") != 2
+        or not isinstance(raw.get("sources"), list)
+    ):
         return None
     return raw
 

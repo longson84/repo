@@ -504,14 +504,13 @@
         border-left: 1px solid #e4e9dc;
         border-bottom: 1px solid #e4e9dc;
         box-sizing: border-box;
-        background:
-          repeating-linear-gradient(
-            to top,
-            transparent,
-            transparent calc(25% - 1px),
-            #eef1e8 calc(25% - 1px),
-            #eef1e8 25%
-          );
+        background: repeating-linear-gradient(
+          to top,
+          transparent,
+          transparent calc(25% - 1px),
+          #eef1e8 calc(25% - 1px),
+          #eef1e8 25%
+        );
       }
       .timeline-bar {
         flex: 1 1 0;
@@ -1407,192 +1406,196 @@
           <span class="demo">Live local scanning</span>
         </header>
         <div id="overviewView">
-        <div class="heading">
-          <div>
-            <h1>Your code, across machines.</h1>
-            <p>See where you left off. Know what needs to move.</p>
-          </div>
-          <div class="actions">
-            <button class="btn" id="manage">Manage tracked repos</button>
-            <button class="btn primary" id="scan">
-              <span class="arrow">⟳</span>
-              Scan
-            </button>
-          </div>
-        </div>
-        <div class="machine-card">
-          <div class="computer">▱</div>
-          <div class="machine-content">
-            <div class="machine-title" id="machineTitle">
-              Current Mac
-              <span>THIS MACHINE</span>
+          <div class="heading">
+            <div>
+              <h1>Your code, across machines.</h1>
+              <p>See where you left off. Know what needs to move.</p>
             </div>
-            <div class="machine-meta" id="machineMeta">
-              4 repositories · ~/Projects · Snapshot captured 4 Oct 2026
+            <div class="actions">
+              <button class="btn" id="manage">Manage tracked repos</button>
+              <button class="btn primary" id="scan">
+                <span class="arrow">⟳</span>
+                Scan
+              </button>
             </div>
           </div>
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <button class="text-btn" id="connect">Connect companion</button>
-            <button class="text-btn" id="disconnect" hidden>Disconnect</button>
+          <div class="machine-card">
+            <div class="computer">▱</div>
+            <div class="machine-content">
+              <div class="machine-title" id="machineTitle">
+                Current Mac
+                <span>THIS MACHINE</span>
+              </div>
+              <div class="machine-meta" id="machineMeta">
+                4 repositories · ~/Projects · Snapshot captured 4 Oct 2026
+              </div>
+            </div>
+            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
+              <button class="text-btn" id="connect">Connect companion</button>
+              <button class="text-btn" id="disconnect" hidden>Disconnect</button>
+            </div>
           </div>
-        </div>
-        <div class="stats">
-          <div class="stat">
-            <div class="stat-top">
+          <div class="stats">
+            <div class="stat">
+              <div class="stat-top">
+                Repositories
+                <span>▦</span>
+              </div>
+              <div class="stat-number" id="total">4</div>
+              <div class="stat-bottom">On this machine</div>
+            </div>
+            <div class="stat">
+              <div class="stat-top">
+                Behind GitHub
+                <span>↓</span>
+              </div>
+              <div class="stat-number amber" id="behindStat">3</div>
+              <div class="stat-bottom">Have updates to receive</div>
+            </div>
+            <div class="stat">
+              <div class="stat-top">
+                Ahead of GitHub
+                <span>↑</span>
+              </div>
+              <div class="stat-number green" id="aheadStat">1</div>
+              <div class="stat-bottom">Have commits to publish</div>
+            </div>
+            <div class="stat">
+              <div class="stat-top">
+                Local changes
+                <span>◌</span>
+              </div>
+              <div class="stat-number" id="dirtyStat">2</div>
+              <div class="stat-bottom">Need attention before syncing</div>
+            </div>
+          </div>
+          <div class="stats portfolio" id="portfolioStats" hidden>
+            <div class="stat">
+              <div class="stat-top">
+                Total commits
+                <span>∑</span>
+              </div>
+              <div class="stat-number" id="commitStat">—</div>
+              <div class="stat-bottom">Sum of cached repos</div>
+            </div>
+            <div class="stat">
+              <div class="stat-top">
+                Commits · 30d
+                <span>◷</span>
+              </div>
+              <div class="stat-number" id="commit30Stat">—</div>
+              <div class="stat-bottom">Recent activity</div>
+            </div>
+            <div class="stat">
+              <div class="stat-top">
+                Contributors
+                <span>◎</span>
+              </div>
+              <div class="stat-number" id="contributorStat">—</div>
+              <div class="stat-bottom">Unique names in cache</div>
+            </div>
+            <div class="stat">
+              <div class="stat-top">
+                Stats coverage
+                <span>□</span>
+              </div>
+              <div class="stat-number" id="statsCoverageStat">—</div>
+              <div class="stat-bottom" id="statsCoverageLabel">Cached / tracked</div>
+            </div>
+          </div>
+          <div class="section-head">
+            <h2>
               Repositories
-              <span>▦</span>
-            </div>
-            <div class="stat-number" id="total">4</div>
-            <div class="stat-bottom">On this machine</div>
+              <span class="small" style="margin-left: 7px" id="repoCount">4</span>
+            </h2>
+            <select id="machine" aria-label="Choose machine">
+              <option value="current">This machine · local companion</option>
+              <option value="other">Second machine · not scanned</option>
+            </select>
           </div>
-          <div class="stat">
-            <div class="stat-top">
-              Behind GitHub
-              <span>↓</span>
-            </div>
-            <div class="stat-number amber" id="behindStat">3</div>
-            <div class="stat-bottom">Have updates to receive</div>
-          </div>
-          <div class="stat">
-            <div class="stat-top">
-              Ahead of GitHub
-              <span>↑</span>
-            </div>
-            <div class="stat-number green" id="aheadStat">1</div>
-            <div class="stat-bottom">Have commits to publish</div>
-          </div>
-          <div class="stat">
-            <div class="stat-top">
-              Local changes
-              <span>◌</span>
-            </div>
-            <div class="stat-number" id="dirtyStat">2</div>
-            <div class="stat-bottom">Need attention before syncing</div>
-          </div>
-        </div>
-        <div class="stats portfolio" id="portfolioStats" hidden>
-          <div class="stat">
-            <div class="stat-top">
-              Total commits
-              <span>∑</span>
-            </div>
-            <div class="stat-number" id="commitStat">—</div>
-            <div class="stat-bottom">Sum of cached repos</div>
-          </div>
-          <div class="stat">
-            <div class="stat-top">
-              Commits · 30d
-              <span>◷</span>
-            </div>
-            <div class="stat-number" id="commit30Stat">—</div>
-            <div class="stat-bottom">Recent activity</div>
-          </div>
-          <div class="stat">
-            <div class="stat-top">
-              Contributors
-              <span>◎</span>
-            </div>
-            <div class="stat-number" id="contributorStat">—</div>
-            <div class="stat-bottom">Unique names in cache</div>
-          </div>
-          <div class="stat">
-            <div class="stat-top">
-              Stats coverage
-              <span>□</span>
-            </div>
-            <div class="stat-number" id="statsCoverageStat">—</div>
-            <div class="stat-bottom" id="statsCoverageLabel">Cached / tracked</div>
-          </div>
-        </div>
-        <div class="section-head">
-          <h2>
-            Repositories
-            <span class="small" style="margin-left: 7px" id="repoCount">4</span>
-          </h2>
-          <select id="machine" aria-label="Choose machine">
-            <option value="current">This machine · local companion</option>
-            <option value="other">Second machine · not scanned</option>
-          </select>
-        </div>
-        <div class="repo-box">
-          <div class="toolbar">
-            <div class="filters">
-              <button class="filter selected" data-filter="all">All repositories</button>
-              <button class="filter" data-filter="behind">Behind</button>
-              <button class="filter" data-filter="ahead">Ahead</button>
-              <button class="filter" data-filter="dirty">Local changes</button>
-            </div>
-            <label class="search">
-              <span>⌕</span>
-              <input id="search" placeholder="Find a repository…" aria-label="Find a repository" />
-            </label>
-          </div>
-          <div class="scroll">
-            <table>
-              <thead>
-                <tr id="repoHead">
-                  <th class="sortable" data-sort="name">Repository</th>
-                  <th class="sortable" data-sort="branch">Branch</th>
-                  <th class="sortable" data-sort="first">First date</th>
-                  <th class="sortable" data-sort="age">Age (days)</th>
-                  <th class="sortable" data-sort="commits">Total commits</th>
-                  <th class="sortable" data-sort="d30">30d</th>
-                  <th class="sortable" data-sort="d7">7d</th>
-                  <th class="sortable" data-sort="last">Last activity</th>
-                  <th class="sortable" data-sort="behind">↓ Behind</th>
-                  <th class="sortable" data-sort="ahead">↑ Ahead</th>
-                  <th class="sortable" data-sort="dirty">Local changes</th>
-                  <th class="sortable" data-sort="next">Next step</th>
-                </tr>
-              </thead>
-              <tbody id="rows"></tbody>
-            </table>
-            <div class="empty" id="empty" hidden>No repositories match this view.</div>
-          </div>
-          <div class="boxfoot">
-            <span id="snapshotLabel">Compared with origin/dev · GitHub fetched 4 Oct 2026</span>
-            <span>Only pushed commits are shared between machines.</span>
-          </div>
-        </div>
-        <div class="lower" id="currentInsights">
-          <section class="panel">
-            <h2>A simple path between machines</h2>
-            <div class="flow">
-              <div class="flow-node">
-                <b>This machine</b>
-                Commit & push
+          <div class="repo-box">
+            <div class="toolbar">
+              <div class="filters">
+                <button class="filter selected" data-filter="all">All repositories</button>
+                <button class="filter" data-filter="behind">Behind</button>
+                <button class="filter" data-filter="ahead">Ahead</button>
+                <button class="filter" data-filter="dirty">Local changes</button>
               </div>
-              <span class="flow-arrow">→</span>
-              <div class="flow-node" style="background: #eaf0df">
-                <b>GitHub</b>
-                Shared history
-              </div>
-              <span class="flow-arrow">→</span>
-              <div class="flow-node dim">
-                <b>Second machine</b>
-                Fetch & pull
-              </div>
+              <label class="search">
+                <span>⌕</span>
+                <input
+                  id="search"
+                  placeholder="Find a repository…"
+                  aria-label="Find a repository"
+                />
+              </label>
             </div>
-            <p class="note">
-              Each computer has its own tracked selection. Unpublished work on another computer is
-              unknown.
-            </p>
-          </section>
-          <section class="panel">
-            <h2>Your next move</h2>
-            <div class="next">
-              <div class="next-icon">↓</div>
-              <div>
-                <strong id="nextTitle">Scan to see available updates</strong>
-                <p id="nextText">Choose repositories and scan your current machine.</p>
-              </div>
+            <div class="scroll">
+              <table>
+                <thead>
+                  <tr id="repoHead">
+                    <th class="sortable" data-sort="name">Repository</th>
+                    <th class="sortable" data-sort="branch">Branch</th>
+                    <th class="sortable" data-sort="first">First date</th>
+                    <th class="sortable" data-sort="age">Age (days)</th>
+                    <th class="sortable" data-sort="commits">Total commits</th>
+                    <th class="sortable" data-sort="d30">30d</th>
+                    <th class="sortable" data-sort="d7">7d</th>
+                    <th class="sortable" data-sort="last">Last activity</th>
+                    <th class="sortable" data-sort="behind">↓ Behind</th>
+                    <th class="sortable" data-sort="ahead">↑ Ahead</th>
+                    <th class="sortable" data-sort="dirty">Local changes</th>
+                    <th class="sortable" data-sort="next">Next step</th>
+                  </tr>
+                </thead>
+                <tbody id="rows"></tbody>
+              </table>
+              <div class="empty" id="empty" hidden>No repositories match this view.</div>
             </div>
-          </section>
-        </div>
-        <footer class="footer">
-          <span>Live data from your paired local companion.</span>
-          <span>Scanning fetches references. Pull and push are not enabled.</span>
-        </footer>
+            <div class="boxfoot">
+              <span id="snapshotLabel">Compared with origin/dev · GitHub fetched 4 Oct 2026</span>
+              <span>Only pushed commits are shared between machines.</span>
+            </div>
+          </div>
+          <div class="lower" id="currentInsights">
+            <section class="panel">
+              <h2>A simple path between machines</h2>
+              <div class="flow">
+                <div class="flow-node">
+                  <b>This machine</b>
+                  Commit & push
+                </div>
+                <span class="flow-arrow">→</span>
+                <div class="flow-node" style="background: #eaf0df">
+                  <b>GitHub</b>
+                  Shared history
+                </div>
+                <span class="flow-arrow">→</span>
+                <div class="flow-node dim">
+                  <b>Second machine</b>
+                  Fetch & pull
+                </div>
+              </div>
+              <p class="note">
+                Each computer has its own tracked selection. Unpublished work on another computer is
+                unknown.
+              </p>
+            </section>
+            <section class="panel">
+              <h2>Your next move</h2>
+              <div class="next">
+                <div class="next-icon">↓</div>
+                <div>
+                  <strong id="nextTitle">Scan to see available updates</strong>
+                  <p id="nextText">Choose repositories and scan your current machine.</p>
+                </div>
+              </div>
+            </section>
+          </div>
+          <footer class="footer">
+            <span>Live data from your paired local companion.</span>
+            <span>Scanning fetches references. Pull and push are not enabled.</span>
+          </footer>
         </div>
         <div id="detailView" class="detail-page" hidden></div>
         <div id="statsView" class="stats-page" hidden></div>

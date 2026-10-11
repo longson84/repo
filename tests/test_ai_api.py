@@ -28,6 +28,18 @@ class AiApiTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = pathlib.Path(self.temp.name)
         (self.root / "proj").mkdir()
+        self.home_patcher = patch.object(pathlib.Path, "home", return_value=self.root)
+        self.home_patcher.start()
+        self.addCleanup(self.home_patcher.stop)
+        self.env_patcher = patch.dict(
+            os.environ,
+            {
+                "CLAUDE_CONFIG_DIR": str(self.root / ".claude"),
+                "CODEX_HOME": str(self.root / ".codex"),
+            },
+        )
+        self.env_patcher.start()
+        self.addCleanup(self.env_patcher.stop)
         self.config = self.root / "settings.json"
         self.config.write_text(json.dumps({"paths": []}) + "\n")
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.module.Handler)
@@ -100,6 +112,16 @@ class AiApiTests(unittest.TestCase):
         self.assertIn("caveats", usage)
         self.assertIn(usage["cache"]["status"], {"rebuilt", "ready"})
         self.assertIn("hits", usage["cache"])
+
+    def test_api_exposes_pricing_quality_reconciliation_and_cache_metadata(self):
+        status, usage = self.request(
+            "POST", "/api/ai/usage", {"sources": ["claude.code"]}
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("pricing_coverage", usage)
+        self.assertIn("warning_count", usage["quality"])
+        self.assertIn("reconciliation", usage)
+        self.assertIn("status", usage["cache"])
 
     def test_usage_api_accepts_conversation_keys_and_compound_sessions(self):
         claude_root = self.root / "claude-home"

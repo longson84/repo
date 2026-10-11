@@ -20,7 +20,11 @@ class PricesTests(unittest.TestCase):
 
     def test_model_prefix_does_not_match_without_explicit_alias(self):
         result = prices.price_usage(
-            {"provider": "anthropic", "model": "claude-opus-5", "input_tokens": 1_000_000},
+            {
+                "provider": "anthropic",
+                "model": "claude-opus-5",
+                "input_tokens": 1_000_000,
+            },
             {"per_million": {"claude-opus": {"input": 15.0}}},
         )
         self.assertEqual(result["status"], "unpriced_model")
@@ -29,9 +33,7 @@ class PricesTests(unittest.TestCase):
         table = {
             "version": 2,
             "aliases": {"openai:gpt-latest": "gpt-6"},
-            "rates": [
-                {"provider": "openai", "model": "gpt-6", "input": 2.0}
-            ],
+            "rates": [{"provider": "openai", "model": "gpt-6", "input": 2.0}],
         }
         result = prices.price_usage(
             {"provider": "openai", "model": "gpt-latest", "input_tokens": 1_000_000},

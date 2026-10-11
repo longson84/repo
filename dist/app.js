@@ -82,10 +82,7 @@ async function pairWithToken(candidate) {
 async function api(path, body) {
   const controller = new AbortController();
   const long =
-    path === 'scan' ||
-    path === 'ai/detect' ||
-    path === 'ai/sessions' ||
-    (path === 'stats' && body);
+    path === 'scan' || path === 'ai/detect' || path === 'ai/sessions' || (path === 'stats' && body);
   const timer = setTimeout(() => controller.abort(), long ? 900000 : 20000);
   try {
     const response = await fetch(base + '/api/' + path, {
@@ -218,7 +215,10 @@ function locMatrixHtml() {
                 <tr class="board-row" data-path="${esc(row.path)}" tabindex="0">
                   <td class="sticky-col"><strong>${esc(row.name)}</strong></td>
                   ${cells}
-                  <td class="num ${row.total ? '' : 'muted'}" title="${esc(formatCompact(row.total))}">
+                  <td
+                    class="num ${row.total ? '' : 'muted'}"
+                    title="${esc(formatCompact(row.total))}"
+                  >
                     ${esc(row.total ? formatLocCell(row.total) : '—')}
                   </td>
                 </tr>
@@ -229,8 +229,8 @@ function locMatrixHtml() {
       </table>
     </div>
     <p class="note">
-      Via scc (code excludes comments). Skips docs/config/markup noise, TypeScript typings, and other
-      non-app languages. ${metricNote} Click a column header to sort.
+      Via scc (code excludes comments). Skips docs/config/markup noise, TypeScript typings, and
+      other non-app languages. ${metricNote} Click a column header to sort.
     </p>
   `;
 }
@@ -346,10 +346,7 @@ function compareSort(a, b) {
 function paintSortHeaders() {
   document.querySelectorAll('#repoHead th.sortable').forEach((th) => {
     const active = th.dataset.sort === sortKey;
-    th.setAttribute(
-      'aria-sort',
-      active ? (sortDir > 0 ? 'ascending' : 'descending') : 'none',
-    );
+    th.setAttribute('aria-sort', active ? (sortDir > 0 ? 'ascending' : 'descending') : 'none');
   });
 }
 function sparkline(weeks) {
@@ -466,9 +463,7 @@ function render() {
           <td>
             <span class="count ${r.ahead ? 'ahead' : 'zero'}">${r.ahead ?? '?'}</span>
           </td>
-          <td>
-            ${dirty ? `${dirty} ${dirty === 1 ? 'file' : 'files'}` : '✓ Clean'}
-          </td>
+          <td>${dirty ? `${dirty} ${dirty === 1 ? 'file' : 'files'}` : '✓ Clean'}</td>
           <td>
             <span class="badge ${eligible(r) || next(r) === 'Up to date' ? 'pull' : 'review'}">
               ${esc(next(r))}
@@ -531,8 +526,7 @@ function render() {
   $('manage').disabled = other || !paired || busy || statsBusy;
   $('connect').textContent = paired ? 'Connection settings' : 'Connect companion';
   if ($('disconnect')) $('disconnect').hidden = !paired;
-  $('scan').innerHTML =
-    busy || statsBusy ? 'Scanning…' : '<span class="arrow">⟳</span> Scan';
+  $('scan').innerHTML = busy || statsBusy ? 'Scanning…' : '<span class="arrow">⟳</span> Scan';
   $('currentMachineNav').textContent = machineName;
   $('currentMachineState').textContent = paired ? 'Companion connected' : 'Not connected';
   $('nextTitle').textContent = `${repos.filter(eligible).length} repositories can receive updates`;
@@ -560,9 +554,13 @@ function render() {
   if (onDetail) {
     detailPath = route.path;
     paintDetail();
-    $('crumb').innerHTML = `Theana <span style="padding:0 10px">/</span> <a href="#/" style="color:inherit">Repositories</a> <span style="padding:0 10px">/</span> <b>${esc(
-      (repos.find((r) => r.path === detailPath) || statsByPath[detailPath] || { name: detailPath.split(/[\\/]/).pop() }).name,
-    )}</b>`;
+    $('crumb').innerHTML =
+      `Theana <span style="padding:0 10px">/</span> <a href="#/" style="color:inherit">Repositories</a> <span style="padding:0 10px">/</span> <b>${esc(
+        (
+          repos.find((r) => r.path === detailPath) ||
+          statsByPath[detailPath] || { name: detailPath.split(/[\\/]/).pop() }
+        ).name,
+      )}</b>`;
   } else if (onStats) {
     paintStats();
     $('crumb').innerHTML =
@@ -573,8 +571,7 @@ function render() {
       'Theana <span style="padding:0 10px">/</span> <a href="#/" style="color:inherit">Repositories</a> <span style="padding:0 10px">/</span> <b>Languages</b>';
   } else if (onAi) {
     paintAi();
-    $('crumb').innerHTML =
-      'Theana <span style="padding:0 10px">/</span> <b>AI</b>';
+    $('crumb').innerHTML = 'Theana <span style="padding:0 10px">/</span> <b>AI</b>';
   } else {
     detailPath = null;
     $('crumb').innerHTML =
@@ -712,9 +709,9 @@ async function runAiSessions() {
     if (aiSessionFilter.source) body.sources = [aiSessionFilter.source];
     if (aiSessionFilter.project.trim()) body.project = aiSessionFilter.project.trim();
     aiSessions = await api('ai/sessions', body);
-    toast(`Loaded ${aiSessions.count} session${aiSessions.count === 1 ? '' : 's'}.`);
+    toast(`Loaded ${aiSessions.conversation_count ?? aiSessions.count ?? 0} conversations.`);
   } catch (error) {
-    toast(error.message || 'Sessions failed.');
+    toast(error.message || 'Conversation loading failed.');
   } finally {
     aiBusy = false;
     paintAi();
@@ -808,44 +805,43 @@ function formatUsd(n) {
 function paintAiDetectPanel() {
   const sources = aiDetect?.sources || [];
   const summary = aiDetect?.summary || { found: 0, total: 0, sessions: 0 };
-  const detectedAt = aiDetect?.detectedAt
-    ? new Date(aiDetect.detectedAt).toLocaleString()
-    : null;
+  const detectedAt = aiDetect?.detectedAt ? new Date(aiDetect.detectedAt).toLocaleString() : null;
   const byTool = {};
   sources.forEach((item) => {
     (byTool[item.tool] ||= []).push(item);
   });
-  const toolOrder = [
-    'antigravity',
-    'claude-code',
-    'claude-desktop',
-    'codex',
-    'cursor',
-  ];
+  const toolOrder = ['antigravity', 'claude-code', 'claude-desktop', 'codex', 'cursor'];
   const tools = [
     ...toolOrder.filter((t) => byTool[t]),
-    ...Object.keys(byTool).filter((t) => !toolOrder.includes(t)).sort(),
+    ...Object.keys(byTool)
+      .filter((t) => !toolOrder.includes(t))
+      .sort(),
   ];
   let rows = '';
   if (!paired) {
-    rows = `<tr><td colspan="6"><div class="callout">Connect the companion to detect AI discussion stores on this machine.</div></td></tr>`;
+    rows = `<tr><td colspan="8"><div class="callout">Connect the companion to detect AI discussion stores on this machine.</div></td></tr>`;
   } else if (!sources.length) {
-    rows = `<tr><td colspan="6"><div class="callout">Click Detect to scan known Antigravity, Claude, Codex, and Cursor locations.</div></td></tr>`;
+    rows = `<tr><td colspan="8"><div class="callout">Click Detect to scan known Antigravity, Claude, Codex, and Cursor locations.</div></td></tr>`;
   } else {
     tools.forEach((tool) => {
-      rows += `<tr class="ai-tool-head"><td colspan="6">${esc(tool)}</td></tr>`;
+      rows += `<tr class="ai-tool-head"><td colspan="8">${esc(tool)}</td></tr>`;
       byTool[tool].forEach((item) => {
         const status = item.exists
           ? `<span class="ai-found">FOUND</span>`
           : `<span class="ai-missing">—</span>`;
-        const sessions =
-          item.session_estimate == null ? '—' : String(item.session_estimate);
+        const conversations =
+          item.conversation_estimate == null ? '—' : String(item.conversation_estimate);
+        const executions = item.execution_estimate == null ? '—' : String(item.execution_estimate);
+        const representations =
+          item.representation_estimate == null ? '—' : String(item.representation_estimate);
         rows += `<tr>
           <td>${esc(item.surface)}</td>
           <td>${status}</td>
           <td class="ai-path">${esc(item.path)}</td>
           <td>${item.exists ? esc(formatBytes(item.size_bytes)) : '—'}</td>
-          <td>${esc(sessions)}</td>
+          <td>${esc(conversations)}</td>
+          <td>${esc(executions)}</td>
+          <td>${esc(representations)}</td>
           <td class="small">${esc(item.notes || '')}</td>
         </tr>`;
       });
@@ -853,13 +849,11 @@ function paintAiDetectPanel() {
   }
   return /* HTML */ `
     <div class="machine-meta" style="margin: 0 0 18px">
-      ${
-        detectedAt
-          ? `${summary.found}/${summary.total} sources found · ~${summary.sessions} sessions · Detected ${esc(detectedAt)}`
-          : paired
-            ? 'Not detected yet on this machine.'
-            : 'Companion not connected.'
-      }
+      ${detectedAt
+        ? `${summary.stores_found ?? summary.found ?? 0}/${summary.total ?? sources.length} stores found · ${summary.conversation_estimate ?? summary.sessions ?? '—'} logical conversations · ${summary.execution_estimate ?? '—'} executions · ${summary.representation_estimate ?? '—'} physical representations · Detected ${esc(detectedAt)}`
+        : paired
+          ? 'Not detected yet on this machine.'
+          : 'Companion not connected.'}
     </div>
     <table class="ai-table">
       <thead>
@@ -868,13 +862,13 @@ function paintAiDetectPanel() {
           <th>Status</th>
           <th>Path</th>
           <th>Size</th>
-          <th>Sessions≈</th>
+          <th>Conversations≈</th>
+          <th>Executions≈</th>
+          <th>Representations</th>
           <th>Notes</th>
         </tr>
       </thead>
-      <tbody>
-        ${rows}
-      </tbody>
+      <tbody>${rows}</tbody>
     </table>
   `;
 }
@@ -898,11 +892,11 @@ function paintAiSessionsPanel() {
     .join('');
   let rows = '';
   if (!paired) {
-    rows = `<tr><td colspan="6"><div class="callout">Connect the companion to list sessions.</div></td></tr>`;
+    rows = `<tr><td colspan="7"><div class="callout">Connect the companion to list conversations.</div></td></tr>`;
   } else if (!aiSessions) {
-    rows = `<tr><td colspan="6"><div class="callout">Click Load sessions to list Antigravity, Claude Code, Codex, and Cursor chats.</div></td></tr>`;
+    rows = `<tr><td colspan="7"><div class="callout">Click Load conversations to list Antigravity, Claude Code, Codex, and Cursor chats.</div></td></tr>`;
   } else if (!list.length) {
-    rows = `<tr><td colspan="6"><div class="callout">No sessions matched these filters.</div></td></tr>`;
+    rows = `<tr><td colspan="7"><div class="callout">No conversations matched these filters.</div></td></tr>`;
   } else {
     list.forEach((item) => {
       rows += `<tr>
@@ -910,22 +904,32 @@ function paintAiSessionsPanel() {
         <td>${esc(item.tool)}<div class="small">${esc(item.surface)}</div></td>
         <td>${esc(item.project || '—')}</td>
         <td>${esc(item.preview || item.title || item.id)}</td>
+        <td>${esc(String(item.execution_count ?? 1))}</td>
         <td>${esc(formatBytes(item.size_bytes))}</td>
         <td class="ai-path small">${esc(item.path || '')}</td>
       </tr>`;
     });
   }
   const meta = aiSessions
-    ? `${aiSessions.count} shown${aiSessions.truncated ? ' (truncated)' : ''} · Listed ${esc(formatAiWhen(aiSessions.listedAt))}`
-    : 'Sessions not loaded yet.';
+    ? `${aiSessions.conversation_count ?? aiSessions.count ?? 0} logical conversations · ${aiSessions.execution_count ?? '—'} executions · ${aiSessions.representation_count ?? '—'} physical representations${aiSessions.truncated ? ' (conversation list truncated)' : ''} · Listed ${esc(formatAiWhen(aiSessions.listedAt))}`
+    : 'Conversations not loaded yet.';
   return /* HTML */ `
     <div class="ai-filters">
       <label class="small" for="aiSourceFilter">Source</label>
-      <select id="aiSourceFilter">${sourceOptions}</select>
+      <select id="aiSourceFilter">
+        ${sourceOptions}
+      </select>
       <label class="small" for="aiProjectFilter">Project contains</label>
-      <input id="aiProjectFilter" type="text" value="${esc(aiSessionFilter.project)}" placeholder="eravnTrans" />
+      <input
+        id="aiProjectFilter"
+        type="text"
+        value="${esc(aiSessionFilter.project)}"
+        placeholder="eravnTrans"
+      />
       <button class="btn primary" id="aiSessionsBtn" ${!paired || aiBusy ? 'disabled' : ''}>
-        ${aiBusy && aiTab === 'sessions' ? 'Loading…' : '<span class="arrow">⟳</span> Load sessions'}
+        ${aiBusy && aiTab === 'sessions'
+          ? 'Loading…'
+          : '<span class="arrow">⟳</span> Load conversations'}
       </button>
     </div>
     <div class="machine-meta" style="margin: 0 0 18px">${meta}</div>
@@ -936,13 +940,12 @@ function paintAiSessionsPanel() {
           <th>Tool</th>
           <th>Project</th>
           <th>Preview</th>
+          <th>Executions</th>
           <th>Size</th>
           <th>Path</th>
         </tr>
       </thead>
-      <tbody>
-        ${rows}
-      </tbody>
+      <tbody>${rows}</tbody>
     </table>
   `;
 }
@@ -995,7 +998,7 @@ function usageTotalRow(totals) {
     <td>${esc(formatTokens(totals.cached_tokens))}</td>
     <td>${esc(formatTokens(totals.output_tokens))}</td>
     <td>${esc(formatUsd(totals.cost_usd))}</td>
-    <td class="small">${esc(Number(totals.events || 0).toLocaleString('en-US'))} events</td>
+    <td class="small">${esc(Number(totals.events || 0).toLocaleString('en-US'))} unique calls</td>
   </tr>`;
 }
 
@@ -1009,7 +1012,7 @@ function usageDataRows(list, labelFn) {
         <td>${esc(formatTokens(item.cached_tokens))}</td>
         <td>${esc(formatTokens(item.output_tokens))}</td>
         <td>${esc(formatUsd(item.cost_usd))}</td>
-        <td class="small">${esc(Number(item.events || 0).toLocaleString('en-US'))} events</td>
+        <td class="small">${esc(Number(item.events || 0).toLocaleString('en-US'))} unique calls</td>
       </tr>`;
     })
     .join('');
@@ -1060,8 +1063,12 @@ function paintAiTokensPanel() {
     (aiUsageGroup === 'model' || aiUsageGroup === 'project') && selectedPeriod
       ? selectedPeriod
       : aiUsage?.totals;
+  const coverage = aiUsage?.pricing_coverage;
+  const coveragePercent = Number(coverage?.event_percentage);
+  const hasCoverage = Number.isFinite(coveragePercent);
+  const costLabel = hasCoverage && coveragePercent < 100 ? 'Partial estimate' : 'Estimate';
   const meta = aiUsage
-    ? `${formatTokens(scopeTotals.input_tokens)} in · ${formatTokens(scopeTotals.cached_tokens)} cached · ${formatTokens(scopeTotals.output_tokens)} out · ${formatUsd(scopeTotals.cost_usd)} · ${esc(formatAiWhen(aiUsage.aggregatedAt))}`
+    ? `${formatTokens(scopeTotals.input_tokens)} in · ${formatTokens(scopeTotals.cached_tokens)} cached · ${formatTokens(scopeTotals.output_tokens)} out · ${costLabel} ${formatUsd(scopeTotals.cost_usd)}${hasCoverage ? ` · ${coveragePercent.toFixed(2)}% of unique calls priced` : ' · pricing coverage unavailable'} · ${esc(formatAiWhen(aiUsage.aggregatedAt))}`
     : 'Usage not loaded yet.';
 
   let rows = '';
@@ -1076,9 +1083,7 @@ function paintAiTokensPanel() {
     if (!series.length) {
       rows = `<tr><td colspan="6"><div class="callout">No dated usage events found.</div></td></tr>`;
     } else {
-      rows = usageDataRows(series, (item) =>
-        formatAiPeriodLabel(item.period, aiUsagePeriod),
-      );
+      rows = usageDataRows(series, (item) => formatAiPeriodLabel(item.period, aiUsagePeriod));
       totalRow = usageTotalRow(aiUsage.totals);
     }
   } else if (aiUsageGroup === 'model') {
@@ -1089,7 +1094,11 @@ function paintAiTokensPanel() {
     } else if (!list.length) {
       rows = `<tr><td colspan="6"><div class="callout">No model usage in ${esc(formatAiPeriodLabel(selectedKey))}.</div></td></tr>`;
     } else {
-      rows = usageDataRows(list, (item) => item.model || '—');
+      rows = usageDataRows(
+        list,
+        (item) =>
+          `${item.provider || 'unknown'} / ${item.model || 'unknown'}${item.pricing_status && item.pricing_status !== 'priced' ? ` · ${item.pricing_status}` : ''}`,
+      );
       totalRow = usageTotalRow(selectedPeriod);
     }
   } else if (aiUsageGroup === 'project') {
@@ -1124,10 +1133,7 @@ function paintAiTokensPanel() {
   }
 
   const periodNav =
-    aiUsage &&
-    (aiUsageGroup === 'model' ||
-      aiUsageGroup === 'project' ||
-      aiUsageGroup === 'period')
+    aiUsage && (aiUsageGroup === 'model' || aiUsageGroup === 'project' || aiUsageGroup === 'period')
       ? `<div class="ai-period-nav">
           <div class="period-tabs">${periodTabs}</div>
           ${
@@ -1149,13 +1155,35 @@ function paintAiTokensPanel() {
   const priceNotes = aiUsage?.prices?.notes
     ? `<p class="small" style="margin-top: 12px">${esc(aiUsage.prices.notes)}</p>`
     : '';
+  const warningCount = Number(aiUsage?.quality?.warning_count || 0);
+  const reconciliation = aiUsage?.quality?.reconciliation || {};
+  const reconciliationDifferences = Number(reconciliation.different || 0);
+  const unknownModels = (aiUsage?.by_model || []).filter(
+    (item) => !item.model || item.model === 'unknown',
+  ).length;
+  const cache = aiUsage?.cache;
+  const qualityNotes = aiUsage
+    ? `<div class="callout" style="margin-top: 18px"><strong>Accounting quality</strong><div class="small" style="margin-top: 8px">
+        ${esc(String(aiUsage.conversation_count ?? '—'))} conversations ·
+        ${esc(String(aiUsage.execution_count ?? '—'))} executions ·
+        ${esc(String(aiUsage.event_count ?? aiUsage.totals?.events ?? 0))} unique provider/model calls ·
+        ${esc(String(warningCount))} parser warnings ·
+        ${esc(String(unknownModels))} unknown models ·
+        ${esc(String(reconciliationDifferences))} reconciliation differences ·
+        cache ${esc(cache?.status || 'unavailable')}${cache ? ` (${esc(String(cache.hits || 0))} hits, ${esc(String((cache.misses || 0) + (cache.reparsed || 0)))} parsed)` : ''}
+      </div>${cache?.status === 'bypassed' ? '<div class="small" style="margin-top: 6px">Cache was bypassed; totals came from a direct read-only scan.</div>' : ''}</div>`
+    : '';
 
   return /* HTML */ `
     <div class="ai-filters">
       <label class="small" for="aiUsageSourceFilter">Source</label>
-      <select id="aiUsageSourceFilter">${sourceOptions}</select>
+      <select id="aiUsageSourceFilter">
+        ${sourceOptions}
+      </select>
       <label class="small" for="aiUsageGroup">Group</label>
-      <select id="aiUsageGroup">${groupOptions}</select>
+      <select id="aiUsageGroup">
+        ${groupOptions}
+      </select>
       <button class="btn primary" id="aiUsageBtn" ${!paired || aiBusy ? 'disabled' : ''}>
         ${aiBusy && aiTab === 'tokens' ? 'Aggregating…' : '<span class="arrow">⟳</span> Aggregate'}
       </button>
@@ -1170,19 +1198,16 @@ function paintAiTokensPanel() {
           <th>Cached</th>
           <th>Output</th>
           <th>Est. $</th>
-          <th>Events</th>
+          <th>Unique calls</th>
         </tr>
       </thead>
-      <tbody>
-        ${rows}
-      </tbody>
+      <tbody>${rows}</tbody>
       ${totalRow ? `<tfoot>${totalRow}</tfoot>` : ''}
     </table>
-    ${
-      caveats
-        ? `<div class="callout" style="margin-top: 18px"><strong>Caveats</strong><ul style="margin: 8px 0 0; padding-left: 18px">${caveats}</ul></div>`
-        : ''
-    }
+    ${qualityNotes}
+    ${caveats
+      ? `<div class="callout" style="margin-top: 18px"><strong>Caveats</strong><ul style="margin: 8px 0 0; padding-left: 18px">${caveats}</ul></div>`
+      : ''}
     ${priceNotes}
   `;
 }
@@ -1230,9 +1255,17 @@ function paintAiSearchPanel() {
   return /* HTML */ `
     <div class="ai-filters">
       <label class="small" for="aiSearchQuery">Query</label>
-      <input id="aiSearchQuery" type="text" value="${esc(aiSearchFilter.q)}" placeholder="login bug" style="min-width: 180px" />
+      <input
+        id="aiSearchQuery"
+        type="text"
+        value="${esc(aiSearchFilter.q)}"
+        placeholder="login bug"
+        style="min-width: 180px"
+      />
       <label class="small" for="aiSearchSourceFilter">Source</label>
-      <select id="aiSearchSourceFilter">${sourceOptions}</select>
+      <select id="aiSearchSourceFilter">
+        ${sourceOptions}
+      </select>
       <button class="btn primary" id="aiSearchBtn" ${!paired || aiBusy ? 'disabled' : ''}>
         ${aiBusy && aiTab === 'search' ? 'Searching…' : '<span class="arrow">⟳</span> Search'}
       </button>
@@ -1247,9 +1280,7 @@ function paintAiSearchPanel() {
           <th>Path</th>
         </tr>
       </thead>
-      <tbody>
-        ${rows}
-      </tbody>
+      <tbody>${rows}</tbody>
     </table>
     <p class="small" style="margin-top: 12px">
       Literal, case-insensitive match. Prefers ripgrep when installed; otherwise Python line scan.
@@ -1279,22 +1310,44 @@ function paintAi() {
     <div class="heading">
       <div>
         <h1>AI</h1>
-        <p>
-          Local discussion stores on this machine. Nothing is uploaded.
-        </p>
+        <p>Local discussion stores on this machine. Nothing is uploaded.</p>
       </div>
       <div class="actions">${action}</div>
     </div>
     <div class="ai-tabs">
-      <button type="button" class="ai-tab ${aiTab === 'detect' ? 'active' : ''}" data-ai-tab="detect">Detect</button>
-      <button type="button" class="ai-tab ${aiTab === 'sessions' ? 'active' : ''}" data-ai-tab="sessions">Sessions</button>
-      <button type="button" class="ai-tab ${aiTab === 'tokens' ? 'active' : ''}" data-ai-tab="tokens">Tokens</button>
-      <button type="button" class="ai-tab ${aiTab === 'search' ? 'active' : ''}" data-ai-tab="search">Search</button>
+      <button
+        type="button"
+        class="ai-tab ${aiTab === 'detect' ? 'active' : ''}"
+        data-ai-tab="detect"
+      >
+        Detect
+      </button>
+      <button
+        type="button"
+        class="ai-tab ${aiTab === 'sessions' ? 'active' : ''}"
+        data-ai-tab="sessions"
+      >
+        Conversations
+      </button>
+      <button
+        type="button"
+        class="ai-tab ${aiTab === 'tokens' ? 'active' : ''}"
+        data-ai-tab="tokens"
+      >
+        Tokens
+      </button>
+      <button
+        type="button"
+        class="ai-tab ${aiTab === 'search' ? 'active' : ''}"
+        data-ai-tab="search"
+      >
+        Search
+      </button>
     </div>
     ${panel}
     <p class="small" style="margin-top: 16px">
-      Wave 1: Detect, Sessions, Tokens, Search.
-      Export comes next.
+      Detect, logical conversations, unique token calls, and search across local AI stores. Export
+      comes next.
     </p>
   `;
   document.querySelectorAll('[data-ai-tab]').forEach((button) => {
@@ -1430,7 +1483,11 @@ function shiftCursor(delta) {
   if (detailPeriod === 'day') {
     detailCursor = new Date(cursor.getFullYear(), cursor.getMonth() + delta, 1);
   } else if (detailPeriod === 'week') {
-    detailCursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + delta * 7 * 12);
+    detailCursor = new Date(
+      cursor.getFullYear(),
+      cursor.getMonth(),
+      cursor.getDate() + delta * 7 * 12,
+    );
   } else if (detailPeriod === 'month') {
     detailCursor = new Date(cursor.getFullYear() + delta, 0, 1);
   } else {
@@ -1442,7 +1499,11 @@ function shiftStatsCursor(delta) {
   if (statsPeriod === 'day') {
     statsCursor = new Date(cursor.getFullYear(), cursor.getMonth() + delta, 1);
   } else if (statsPeriod === 'week') {
-    statsCursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + delta * 7 * 12);
+    statsCursor = new Date(
+      cursor.getFullYear(),
+      cursor.getMonth(),
+      cursor.getDate() + delta * 7 * 12,
+    );
   } else {
     statsCursor = new Date(cursor.getFullYear() + delta, 0, 1);
   }
@@ -1567,7 +1628,9 @@ function calendarGrid(map, series, linesMap = null) {
       }${lines && lines !== '—' ? ` · ${lines}` : ''}`;
       cells.push(/* HTML */ `
         <div
-          class="cal-cell ${commits ? 'active' : 'zero'} ${commits && commits === peak ? 'peak' : ''}"
+          class="cal-cell ${commits ? 'active' : 'zero'} ${commits && commits === peak
+            ? 'peak'
+            : ''}"
           title="${esc(tip)}"
         >
           <span class="d">${esc(day)}</span>
@@ -1596,7 +1659,9 @@ function calendarGrid(map, series, linesMap = null) {
           }`;
           return /* HTML */ `
             <div
-              class="cal-cell ${commits ? 'active' : 'zero'} ${commits && commits === peak ? 'peak' : ''}"
+              class="cal-cell ${commits ? 'active' : 'zero'} ${commits && commits === peak
+                ? 'peak'
+                : ''}"
               title="${esc(tip)}"
             >
               <span class="d">${esc(label)}</span>
@@ -1619,7 +1684,10 @@ function timelineChart(map, series, mode, extraMeta = '', linesMap = null) {
   const peak = Math.max(...counts);
   const mid = Math.round(max / 2);
   const viewLines = linesMap
-    ? series.reduce((sum, item) => addLines(sum, linesForBucket(linesMap, item, mode)), emptyLines())
+    ? series.reduce(
+        (sum, item) => addLines(sum, linesForBucket(linesMap, item, mode)),
+        emptyLines(),
+      )
     : null;
   const bars = series
     .map((item, index) => {
@@ -1649,11 +1717,19 @@ function timelineChart(map, series, mode, extraMeta = '', linesMap = null) {
   return /* HTML */ `
     <div class="timeline-panel">
       <div class="timeline-meta">
-        <span>In view <strong>${esc(total)}</strong></span>
-        <span>Active <strong>${esc(active)}/${esc(series.length)}</strong></span>
-        <span>Peak <strong>${esc(peak)}</strong></span>
-        ${linesMeta}
-        ${extraMeta}
+        <span>
+          In view
+          <strong>${esc(total)}</strong>
+        </span>
+        <span>
+          Active
+          <strong>${esc(active)}/${esc(series.length)}</strong>
+        </span>
+        <span>
+          Peak
+          <strong>${esc(peak)}</strong>
+        </span>
+        ${linesMeta} ${extraMeta}
       </div>
       <div class="timeline-chart" role="img" aria-label="Commit timeline">
         <div class="timeline-y">
@@ -1800,15 +1876,13 @@ function paintStats() {
         </button>
       </div>
     </div>
-    ${
-      !paired
-        ? '<div class="callout">Connect the companion to load local Git stats.</div>'
-        : !paths.length
-          ? '<div class="callout">Track repositories first, then Scan.</div>'
-          : !hasCache
-            ? '<div class="callout">No cached stats yet. Click Scan to refresh sync status and portfolio stats.</div>'
-            : ''
-    }
+    ${!paired
+      ? '<div class="callout">Connect the companion to load local Git stats.</div>'
+      : !paths.length
+        ? '<div class="callout">Track repositories first, then Scan.</div>'
+        : !hasCache
+          ? '<div class="callout">No cached stats yet. Click Scan to refresh sync status and portfolio stats.</div>'
+          : ''}
     <section class="stats-section">
       <div class="section-head">
         <h2>Activity</h2>
@@ -1816,7 +1890,10 @@ function paintStats() {
           ${['day', 'week', 'month']
             .map(
               (period) => /* HTML */ `
-                <button data-stats-period="${period}" class="${statsPeriod === period ? 'selected' : ''}">
+                <button
+                  data-stats-period="${period}"
+                  class="${statsPeriod === period ? 'selected' : ''}"
+                >
                   ${period[0].toUpperCase() + period.slice(1)}
                 </button>
               `,
@@ -1831,25 +1908,23 @@ function paintStats() {
         <button class="btn" id="statsNext">Next →</button>
       </div>
       <h3 style="margin:18px 0 0;font-size:14px">Top this period</h3>
-      ${
-        tops.length
-          ? /* HTML */ `
-              <ol class="top-repos">
-                ${tops
-                  .map(
-                    (row, i) => /* HTML */ `
-                      <li data-path="${esc(row.path)}" tabindex="0">
-                        <span class="rank">${esc(i + 1)}</span>
-                        <span class="name">${esc(row.name)}</span>
-                        <span class="count">${esc(row.commits)}</span>
-                      </li>
-                    `,
-                  )
-                  .join('')}
-              </ol>
-            `
-          : '<p class="note">No commits in this window across cached repositories.</p>'
-      }
+      ${tops.length
+        ? /* HTML */ `
+            <ol class="top-repos">
+              ${tops
+                .map(
+                  (row, i) => /* HTML */ `
+                    <li data-path="${esc(row.path)}" tabindex="0">
+                      <span class="rank">${esc(i + 1)}</span>
+                      <span class="name">${esc(row.name)}</span>
+                      <span class="count">${esc(row.commits)}</span>
+                    </li>
+                  `,
+                )
+                .join('')}
+            </ol>
+          `
+        : '<p class="note">No commits in this window across cached repositories.</p>'}
     </section>
     <section class="stats-section">
       <div class="section-head">
@@ -1859,39 +1934,82 @@ function paintStats() {
         <table>
           <thead>
             <tr>
-              <th class="sortable ${boardSortKey === 'name' ? (boardSortDir > 0 ? 'sorted-asc' : 'sorted-desc') : ''}" data-board-sort="name">Repo</th>
-              <th class="sortable ${boardSortKey === 'commits7d' ? (boardSortDir > 0 ? 'sorted-asc' : 'sorted-desc') : ''}" data-board-sort="commits7d">7d</th>
-              <th class="sortable ${boardSortKey === 'commits30d' ? (boardSortDir > 0 ? 'sorted-asc' : 'sorted-desc') : ''}" data-board-sort="commits30d">30d</th>
-              <th class="sortable ${boardSortKey === 'commitCount' ? (boardSortDir > 0 ? 'sorted-asc' : 'sorted-desc') : ''}" data-board-sort="commitCount">All</th>
-              <th class="sortable ${boardSortKey === 'lastCommitAt' ? (boardSortDir > 0 ? 'sorted-asc' : 'sorted-desc') : ''}" data-board-sort="lastCommitAt">Last commit</th>
+              <th
+                class="sortable ${boardSortKey === 'name'
+                  ? boardSortDir > 0
+                    ? 'sorted-asc'
+                    : 'sorted-desc'
+                  : ''}"
+                data-board-sort="name"
+              >
+                Repo
+              </th>
+              <th
+                class="sortable ${boardSortKey === 'commits7d'
+                  ? boardSortDir > 0
+                    ? 'sorted-asc'
+                    : 'sorted-desc'
+                  : ''}"
+                data-board-sort="commits7d"
+              >
+                7d
+              </th>
+              <th
+                class="sortable ${boardSortKey === 'commits30d'
+                  ? boardSortDir > 0
+                    ? 'sorted-asc'
+                    : 'sorted-desc'
+                  : ''}"
+                data-board-sort="commits30d"
+              >
+                30d
+              </th>
+              <th
+                class="sortable ${boardSortKey === 'commitCount'
+                  ? boardSortDir > 0
+                    ? 'sorted-asc'
+                    : 'sorted-desc'
+                  : ''}"
+                data-board-sort="commitCount"
+              >
+                All
+              </th>
+              <th
+                class="sortable ${boardSortKey === 'lastCommitAt'
+                  ? boardSortDir > 0
+                    ? 'sorted-asc'
+                    : 'sorted-desc'
+                  : ''}"
+                data-board-sort="lastCommitAt"
+              >
+                Last commit
+              </th>
               <th>30d spark</th>
             </tr>
           </thead>
           <tbody>
-            ${
-              rows.length
-                ? rows
-                    .map((row) => {
-                      const num = (value) =>
-                        value == null
-                          ? '<td class="num muted">—</td>'
-                          : `<td class="num">${esc(value)}</td>`;
-                      return /* HTML */ `
-                        <tr class="board-row" data-path="${esc(row.path)}" tabindex="0">
-                          <td><strong>${esc(row.name)}</strong></td>
-                          ${num(row.commits7d)}
-                          ${num(row.commits30d)}
-                          ${num(row.commitCount)}
-                          <td class="${row.lastCommitAt ? '' : 'muted'}">
-                            ${esc(row.lastCommitAt ? formatDate(row.lastCommitAt) : '—')}
-                          </td>
-                          <td>${row.hasCache ? sparkline(row.map) : '<span class="muted">—</span>'}</td>
-                        </tr>
-                      `;
-                    })
-                    .join('')
-                : '<tr><td colspan="6" class="muted">No tracked repositories.</td></tr>'
-            }
+            ${rows.length
+              ? rows
+                  .map((row) => {
+                    const num = (value) =>
+                      value == null
+                        ? '<td class="num muted">—</td>'
+                        : `<td class="num">${esc(value)}</td>`;
+                    return /* HTML */ `
+                      <tr class="board-row" data-path="${esc(row.path)}" tabindex="0">
+                        <td><strong>${esc(row.name)}</strong></td>
+                        ${num(row.commits7d)} ${num(row.commits30d)} ${num(row.commitCount)}
+                        <td class="${row.lastCommitAt ? '' : 'muted'}">
+                          ${esc(row.lastCommitAt ? formatDate(row.lastCommitAt) : '—')}
+                        </td>
+                        <td>
+                          ${row.hasCache ? sparkline(row.map) : '<span class="muted">—</span>'}
+                        </td>
+                      </tr>
+                    `;
+                  })
+                  .join('')
+              : '<tr><td colspan="6" class="muted">No tracked repositories.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -1907,11 +2025,9 @@ function paintLanguages() {
       <div>
         <h1>Languages</h1>
         <p>
-          ${
-            locMetric === 'complexity'
-              ? 'Complexity by language across tracked repositories (scc).'
-              : 'Code lines by language across tracked repositories (scc).'
-          }
+          ${locMetric === 'complexity'
+            ? 'Complexity by language across tracked repositories (scc).'
+            : 'Code lines by language across tracked repositories (scc).'}
         </p>
       </div>
       <div class="actions">
@@ -1924,21 +2040,24 @@ function paintLanguages() {
         </button>
       </div>
     </div>
-    ${
-      !paired
-        ? '<div class="callout">Connect the companion to load language counts.</div>'
-        : !paths.length
-          ? '<div class="callout">Track repositories first, then Scan.</div>'
-          : !hasCache
-            ? '<div class="callout">No cached stats yet. Click Scan to compute LOC with scc.</div>'
-            : ''
-    }
+    ${!paired
+      ? '<div class="callout">Connect the companion to load language counts.</div>'
+      : !paths.length
+        ? '<div class="callout">Track repositories first, then Scan.</div>'
+        : !hasCache
+          ? '<div class="callout">No cached stats yet. Click Scan to compute LOC with scc.</div>'
+          : ''}
     <section class="stats-section">
       <div class="section-head">
         <h2>${locMetric === 'complexity' ? 'Complexity' : 'Code lines'}</h2>
         <div class="period-tabs">
-          <button data-loc-metric="code" class="${locMetric === 'code' ? 'selected' : ''}">Code</button>
-          <button data-loc-metric="complexity" class="${locMetric === 'complexity' ? 'selected' : ''}">
+          <button data-loc-metric="code" class="${locMetric === 'code' ? 'selected' : ''}">
+            Code
+          </button>
+          <button
+            data-loc-metric="complexity"
+            class="${locMetric === 'complexity' ? 'selected' : ''}"
+          >
             Complexity
           </button>
         </div>
@@ -2027,21 +2146,19 @@ function bindStatsPage() {
 }
 function paintDetail() {
   const path = detailPath;
-  const r =
-    repos.find((repo) => repo.path === path) ||
-    ({
-      path,
-      name: path.split(/[\\/]/).pop(),
-      branch: '—',
-      upstream: null,
-      ahead: null,
-      behind: null,
-      modified: 0,
-      untracked: 0,
-      fresh: false,
-      error: scannedAt ? null : 'Scan this machine to see sync status.',
-      github: null,
-    });
+  const r = repos.find((repo) => repo.path === path) || {
+    path,
+    name: path.split(/[\\/]/).pop(),
+    branch: '—',
+    upstream: null,
+    ahead: null,
+    behind: null,
+    modified: 0,
+    untracked: 0,
+    fresh: false,
+    error: scannedAt ? null : 'Scan this machine to see sync status.',
+    github: null,
+  };
   const s = statsByPath[path];
   const remotes =
     (s?.remotes || []).map((m) => `${esc(m.name)} · ${esc(m.url)}`).join('<br>') || 'None';
@@ -2068,87 +2185,88 @@ function paintDetail() {
       ])}
     </div>
     ${r.error ? `<div class="callout">${esc(r.error)}</div>` : ''}
-    ${
-      s
-        ? /* HTML */ `
-            <section class="stats-section">
-              <h2>Volume & age</h2>
-              <div class="detail-grid">
-                ${cells([
-                  ['Total commits', s.commitCount ?? '—'],
-                  ['Age', s.ageLabel || '—'],
-                  ['First commit', formatDate(s.firstCommitAt)],
-                  ['Lifespan', s.lifespanDays != null ? s.lifespanDays + ' days' : '—'],
-                  ['7d commits', s.commits7d ?? '—'],
-                  ['30d commits', s.commits30d ?? '—'],
-                  ['90d commits', s.commits90d ?? '—'],
-                  ['Tracked size', formatBytes(s.workingTreeBytes)],
-                  ['Diff churn + / − / net', formatLines(s.linesTotal)],
-                  ['Diff churn 7d', formatLines(s.lines7d)],
-                  ['Diff churn 30d', formatLines(s.lines30d)],
-                  ['Diff churn 90d', formatLines(s.lines90d)],
-                ])}
-              </div>
-              <p class="note">
-                Last: ${esc(s.lastCommitAuthor || '—')} · ${esc(formatDate(s.lastCommitAt))} ·
-                ${esc(s.lastCommitSubject || '')}
-              </p>
-            </section>
-            <section class="stats-section">
-              <h2>Commits over time</h2>
-              <div class="detail-grid">
-                ${cells([
-                  [
-                    'Peak day',
-                    (summary.peakDayCommits ?? '—') +
-                      (summary.peakDayPeriod ? ` · ${formatDate(summary.peakDayPeriod + 'T12:00:00')}` : ''),
-                  ],
-                  ['Peak week', summary.peakWeekCommits ?? '—'],
-                  ['Avg / week', summary.avgWeekCommits ?? '—'],
-                  ['Burst ratio', summary.burstRatio ?? '—'],
-                  ['Active weeks', summary.activeWeeks ?? '—'],
-                  ['Quiet weeks', summary.quietWeeks ?? '—'],
-                ])}
-              </div>
-              <div class="period-tabs">
-                ${['day', 'week', 'month', 'year']
-                  .map(
-                    (period) => /* HTML */ `
-                      <button data-period="${period}" class="${detailPeriod === period ? 'selected' : ''}">
-                        ${period[0].toUpperCase() + period.slice(1)}
-                      </button>
-                    `,
-                  )
-                  .join('')}
-              </div>
-              <p class="small">${esc(rangeLabel)}</p>
-              ${timelineViz(s)}
-            </section>
-            <section class="stats-section">
-              <h2>Remotes</h2>
-              <div class="mono">${remotes}</div>
-            </section>
-            ${s.error ? `<div class="callout">${esc(s.error)}</div>` : ''}
+    ${s
+      ? /* HTML */ `
+          <section class="stats-section">
+            <h2>Volume & age</h2>
+            <div class="detail-grid">
+              ${cells([
+                ['Total commits', s.commitCount ?? '—'],
+                ['Age', s.ageLabel || '—'],
+                ['First commit', formatDate(s.firstCommitAt)],
+                ['Lifespan', s.lifespanDays != null ? s.lifespanDays + ' days' : '—'],
+                ['7d commits', s.commits7d ?? '—'],
+                ['30d commits', s.commits30d ?? '—'],
+                ['90d commits', s.commits90d ?? '—'],
+                ['Tracked size', formatBytes(s.workingTreeBytes)],
+                ['Diff churn + / − / net', formatLines(s.linesTotal)],
+                ['Diff churn 7d', formatLines(s.lines7d)],
+                ['Diff churn 30d', formatLines(s.lines30d)],
+                ['Diff churn 90d', formatLines(s.lines90d)],
+              ])}
+            </div>
             <p class="note">
-              Stats computed ${esc(s.computedAt ? new Date(s.computedAt).toLocaleString() : '—')}
-              · HEAD ${esc(s.head || '—')}
+              Last: ${esc(s.lastCommitAuthor || '—')} · ${esc(formatDate(s.lastCommitAt))} ·
+              ${esc(s.lastCommitSubject || '')}
             </p>
-            <button class="btn" id="refreshOneStats">Refresh stats</button>
-          `
-        : /* HTML */ `
-            <div class="callout">Loading repository stats…</div>
-            <button class="btn lime" id="refreshOneStats">Load stats</button>
-          `
-    }
-    ${
-      r.github
-        ? /* HTML */ `
-            <p style="margin-top:16px">
-              <a href="${esc(r.github)}" target="_blank" rel="noopener">Open on GitHub ↗</a>
-            </p>
-          `
-        : ''
-    }
+          </section>
+          <section class="stats-section">
+            <h2>Commits over time</h2>
+            <div class="detail-grid">
+              ${cells([
+                [
+                  'Peak day',
+                  (summary.peakDayCommits ?? '—') +
+                    (summary.peakDayPeriod
+                      ? ` · ${formatDate(summary.peakDayPeriod + 'T12:00:00')}`
+                      : ''),
+                ],
+                ['Peak week', summary.peakWeekCommits ?? '—'],
+                ['Avg / week', summary.avgWeekCommits ?? '—'],
+                ['Burst ratio', summary.burstRatio ?? '—'],
+                ['Active weeks', summary.activeWeeks ?? '—'],
+                ['Quiet weeks', summary.quietWeeks ?? '—'],
+              ])}
+            </div>
+            <div class="period-tabs">
+              ${['day', 'week', 'month', 'year']
+                .map(
+                  (period) => /* HTML */ `
+                    <button
+                      data-period="${period}"
+                      class="${detailPeriod === period ? 'selected' : ''}"
+                    >
+                      ${period[0].toUpperCase() + period.slice(1)}
+                    </button>
+                  `,
+                )
+                .join('')}
+            </div>
+            <p class="small">${esc(rangeLabel)}</p>
+            ${timelineViz(s)}
+          </section>
+          <section class="stats-section">
+            <h2>Remotes</h2>
+            <div class="mono">${remotes}</div>
+          </section>
+          ${s.error ? `<div class="callout">${esc(s.error)}</div>` : ''}
+          <p class="note">
+            Stats computed ${esc(s.computedAt ? new Date(s.computedAt).toLocaleString() : '—')} ·
+            HEAD ${esc(s.head || '—')}
+          </p>
+          <button class="btn" id="refreshOneStats">Refresh stats</button>
+        `
+      : /* HTML */ `
+          <div class="callout">Loading repository stats…</div>
+          <button class="btn lime" id="refreshOneStats">Load stats</button>
+        `}
+    ${r.github
+      ? /* HTML */ `
+          <p style="margin-top:16px">
+            <a href="${esc(r.github)}" target="_blank" rel="noopener">Open on GitHub ↗</a>
+          </p>
+        `
+      : ''}
   `;
   $('backRepos').onclick = closeRepo;
   document.querySelectorAll('[data-period]').forEach((button) => {
@@ -2158,14 +2276,16 @@ function paintDetail() {
       paintDetail();
     };
   });
-  if ($('calPrev')) $('calPrev').onclick = () => {
-    shiftCursor(-1);
-    paintDetail();
-  };
-  if ($('calNext')) $('calNext').onclick = () => {
-    shiftCursor(1);
-    paintDetail();
-  };
+  if ($('calPrev'))
+    $('calPrev').onclick = () => {
+      shiftCursor(-1);
+      paintDetail();
+    };
+  if ($('calNext'))
+    $('calNext').onclick = () => {
+      shiftCursor(1);
+      paintDetail();
+    };
   const refresh = $('refreshOneStats');
   if (refresh) {
     refresh.onclick = async () => {
@@ -2230,10 +2350,17 @@ function connect() {
       <p>
         Or paste a token from the companion terminal. The browser remembers it until you disconnect.
         Restarting the companion keeps the same token unless you pass
-        <span class="mono">--new-token</span>.
+        <span class="mono">--new-token</span>
+        .
       </p>
       <label class="small" for="pairToken">Pairing token</label>
-      <input class="setup-input" id="pairToken" type="password" autocomplete="off" value="${esc(token)}" />
+      <input
+        class="setup-input"
+        id="pairToken"
+        type="password"
+        autocomplete="off"
+        value="${esc(token)}"
+      />
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
         <button class="btn lime" id="pair">Connect</button>
         ${paired ? '<button class="btn" id="forgetPair">Disconnect</button>' : ''}

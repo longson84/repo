@@ -90,9 +90,9 @@ def _merge_conversations(rows: Sequence[dict]) -> list[dict]:
 
         current_confidence = str(current.get("identity_confidence") or "path-derived")
         incoming_confidence = str(row.get("identity_confidence") or "path-derived")
-        prefer_incoming = confidence_rank.get(incoming_confidence, 0) > confidence_rank.get(
-            current_confidence, 0
-        )
+        prefer_incoming = confidence_rank.get(
+            incoming_confidence, 0
+        ) > confidence_rank.get(current_confidence, 0)
         if current.get("surface") in {None, "unknown", "agent-transcripts"} and row.get(
             "surface"
         ) not in {None, "unknown", "agent-transcripts"}:
@@ -116,8 +116,16 @@ def _merge_conversations(rows: Sequence[dict]) -> list[dict]:
             for field in ("cwd", "project", "title", "preview", "path"):
                 if not current.get(field) and row.get(field):
                     current[field] = row[field]
-        starts = [value for value in (current.get("started_at"), row.get("started_at")) if value]
-        updates = [value for value in (current.get("updated_at"), row.get("updated_at")) if value]
+        starts = [
+            value
+            for value in (current.get("started_at"), row.get("started_at"))
+            if value
+        ]
+        updates = [
+            value
+            for value in (current.get("updated_at"), row.get("updated_at"))
+            if value
+        ]
         current["started_at"] = min(starts) if starts else None
         current["updated_at"] = max(updates) if updates else None
 
@@ -192,7 +200,8 @@ def resolve_conversation_selectors(
         matches = [
             row
             for row in rows
-            if row.get("id") == session_id and source_id in (row.get("source_ids") or [])
+            if row.get("id") == session_id
+            and source_id in (row.get("source_ids") or [])
         ]
         if len(matches) != 1:
             raise ValueError(
@@ -202,7 +211,9 @@ def resolve_conversation_selectors(
     for session_id in legacy_session_ids or []:
         matches = [row for row in rows if row.get("id") == session_id]
         if len(matches) > 1:
-            candidates = ", ".join(sorted(str(row["conversation_key"]) for row in matches))
+            candidates = ", ".join(
+                sorted(str(row["conversation_key"]) for row in matches)
+            )
             raise ValueError(
                 f"Ambiguous session id {session_id}; candidates: {candidates}"
             )
@@ -232,16 +243,19 @@ def list_sessions(
     scanned = [
         source["id"]
         for source in resolved
-        if source["id"] in WAVE1_LISTABLE
-        and (wanted is None or source["id"] in wanted)
+        if source["id"] in WAVE1_LISTABLE and (wanted is None or source["id"] in wanted)
     ]
     collected = collect_sessions(sources=sources, project=project, env=env, home=home)
     if conversation_keys:
         wanted_keys = set(conversation_keys)
         unknown = wanted_keys - {str(row.get("conversation_key")) for row in collected}
         if unknown:
-            raise ValueError(f"Unknown conversation key(s): {', '.join(sorted(unknown))}")
-        collected = [row for row in collected if row.get("conversation_key") in wanted_keys]
+            raise ValueError(
+                f"Unknown conversation key(s): {', '.join(sorted(unknown))}"
+            )
+        collected = [
+            row for row in collected if row.get("conversation_key") in wanted_keys
+        ]
     collected.sort(key=_sort_key, reverse=True)
     truncated = len(collected) > limit
     collected = collected[:limit]
@@ -250,7 +264,10 @@ def list_sessions(
         int(item.get("representation_count") or 0) for item in collected
     )
     if not include_executions:
-        collected = [{key: value for key, value in item.items() if key != "executions"} for item in collected]
+        collected = [
+            {key: value for key, value in item.items() if key != "executions"}
+            for item in collected
+        ]
     return {
         "version": 1,
         "listedAt": datetime.now(timezone.utc).isoformat(),

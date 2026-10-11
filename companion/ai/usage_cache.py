@@ -294,7 +294,12 @@ def refresh_usage_cache(
                     if table == "events":
                         con.execute(
                             "INSERT INTO events VALUES (?, ?, ?, ?)",
-                            (file_id, ordinal, payload.get("event_key"), _json(payload)),
+                            (
+                                file_id,
+                                ordinal,
+                                payload.get("event_key"),
+                                _json(payload),
+                            ),
                         )
                     else:
                         con.execute(

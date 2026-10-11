@@ -140,7 +140,9 @@ def list_cli_sessions(chats_root: Path, source_id: str = "cursor.cli") -> list[d
                 updated_at=_mtime_iso(db),
                 size_bytes=size,
                 path=str(db),
-                conversation_key=conversation_key("cursor", str(meta.get("agentId") or chat_id)),
+                conversation_key=conversation_key(
+                    "cursor", str(meta.get("agentId") or chat_id)
+                ),
                 source_ids=[source_id],
                 paths=[str(db)],
                 execution_count=1,
@@ -161,7 +163,9 @@ def list_cli_sessions(chats_root: Path, source_id: str = "cursor.cli") -> list[d
     return out
 
 
-def list_agent_transcripts(projects_root: Path, source_id: str = "cursor.agent-transcripts") -> list[dict]:
+def list_agent_transcripts(
+    projects_root: Path, source_id: str = "cursor.agent-transcripts"
+) -> list[dict]:
     root = Path(projects_root)
     if not root.is_dir():
         return []
@@ -171,11 +175,7 @@ def list_agent_transcripts(projects_root: Path, source_id: str = "cursor.agent-t
     except OSError:
         # fallback broader
         try:
-            files = [
-                p
-                for p in root.rglob("*.jsonl")
-                if "agent-transcripts" in p.parts
-            ]
+            files = [p for p in root.rglob("*.jsonl") if "agent-transcripts" in p.parts]
         except OSError:
             return []
     for path in files:
@@ -198,7 +198,9 @@ def list_agent_transcripts(projects_root: Path, source_id: str = "cursor.agent-t
                         continue
                     role = row.get("role") or row.get("type")
                     if role in {"user", "human"}:
-                        content = row.get("content") or row.get("text") or row.get("message")
+                        content = (
+                            row.get("content") or row.get("text") or row.get("message")
+                        )
                         if isinstance(content, str):
                             preview = clip(content)
                             break
@@ -218,7 +220,11 @@ def list_agent_transcripts(projects_root: Path, source_id: str = "cursor.agent-t
             idx = parts.index("projects")
             if idx + 1 < len(parts):
                 encoded = parts[idx + 1]
-                project = encoded.replace("-Users-", "").split("-Projects-")[-1] if "Projects" in encoded or "projects" in encoded else encoded
+                project = (
+                    encoded.replace("-Users-", "").split("-Projects-")[-1]
+                    if "Projects" in encoded or "projects" in encoded
+                    else encoded
+                )
         out.append(
             summary(
                 id=path.stem,

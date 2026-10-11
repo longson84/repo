@@ -99,10 +99,15 @@ class UsageCacheTests(unittest.TestCase):
 
             refresh_usage_cache(
                 cache,
-                [self.descriptor(one, parser("one")), self.descriptor(two, parser("two"))],
+                [
+                    self.descriptor(one, parser("one")),
+                    self.descriptor(two, parser("two")),
+                ],
             )
             result = refresh_usage_cache(cache, [self.descriptor(one, parser("one"))])
-            self.assertEqual([event["event_key"] for event in result["events"]], ["one"])
+            self.assertEqual(
+                [event["event_key"] for event in result["events"]], ["one"]
+            )
             self.assertEqual(result["cache"]["deleted"], 1)
 
     def test_parser_version_change_invalidates_cached_events(self):
@@ -118,7 +123,9 @@ class UsageCacheTests(unittest.TestCase):
                 return self.batch(len(calls))
 
             refresh_usage_cache(cache, [self.descriptor(source, parse, version=1)])
-            result = refresh_usage_cache(cache, [self.descriptor(source, parse, version=2)])
+            result = refresh_usage_cache(
+                cache, [self.descriptor(source, parse, version=2)]
+            )
             self.assertEqual(len(calls), 2)
             self.assertEqual(result["cache"]["reparsed"], 1)
 

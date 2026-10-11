@@ -15,13 +15,48 @@ DEFAULT_PRICES: dict[str, Any] = {
     "per_million": {
         "gemini-3-flash": {"input": 0.75, "cached": 0.075, "output": 3.75},
         "gemini-3-pro-high": {"input": 2.0, "cached": 0.2, "output": 12.0},
-        "claude-sonnet-4-6": {"input": 3.0, "cached": 0.30, "output": 15.0, "cache_write": 3.75},
-        "claude-sonnet-4-5": {"input": 3.0, "cached": 0.30, "output": 15.0, "cache_write": 3.75},
-        "claude-sonnet": {"input": 3.0, "cached": 0.30, "output": 15.0, "cache_write": 3.75},
-        "claude-opus-4": {"input": 15.0, "cached": 1.50, "output": 75.0, "cache_write": 18.75},
-        "claude-opus": {"input": 15.0, "cached": 1.50, "output": 75.0, "cache_write": 18.75},
-        "claude-haiku": {"input": 1.0, "cached": 0.10, "output": 5.0, "cache_write": 1.25},
-        "claude-fable": {"input": 5.0, "cached": 0.50, "output": 25.0, "cache_write": 6.25},
+        "claude-sonnet-4-6": {
+            "input": 3.0,
+            "cached": 0.30,
+            "output": 15.0,
+            "cache_write": 3.75,
+        },
+        "claude-sonnet-4-5": {
+            "input": 3.0,
+            "cached": 0.30,
+            "output": 15.0,
+            "cache_write": 3.75,
+        },
+        "claude-sonnet": {
+            "input": 3.0,
+            "cached": 0.30,
+            "output": 15.0,
+            "cache_write": 3.75,
+        },
+        "claude-opus-4": {
+            "input": 15.0,
+            "cached": 1.50,
+            "output": 75.0,
+            "cache_write": 18.75,
+        },
+        "claude-opus": {
+            "input": 15.0,
+            "cached": 1.50,
+            "output": 75.0,
+            "cache_write": 18.75,
+        },
+        "claude-haiku": {
+            "input": 1.0,
+            "cached": 0.10,
+            "output": 5.0,
+            "cache_write": 1.25,
+        },
+        "claude-fable": {
+            "input": 5.0,
+            "cached": 0.50,
+            "output": 25.0,
+            "cache_write": 6.25,
+        },
         "gpt-5.5": {"input": 1.25, "cached": 0.125, "output": 10.0},
         "gpt-5": {"input": 1.25, "cached": 0.125, "output": 10.0},
         "gpt-6": {"input": 1.75, "cached": 0.175, "output": 14.0},
@@ -66,7 +101,9 @@ def _valid_rates(rate: Mapping[str, Any]) -> bool:
     return present
 
 
-def _alias_target(provider: str, model: str, table: Mapping[str, Any]) -> tuple[str, str]:
+def _alias_target(
+    provider: str, model: str, table: Mapping[str, Any]
+) -> tuple[str, str]:
     aliases = table.get("aliases")
     if not isinstance(aliases, Mapping):
         return provider, model
@@ -155,7 +192,9 @@ def price_usage(usage: Mapping[str, Any], table: Mapping[str, Any]) -> dict[str,
 
 def rates_for(model: Optional[str], table: Mapping[str, Any]) -> Mapping[str, float]:
     """Compatibility helper returning only an exact legacy rate."""
-    rate, _ = resolve_rate(provider="", model=str(model or ""), event_date=None, table=table)
+    rate, _ = resolve_rate(
+        provider="", model=str(model or ""), event_date=None, table=table
+    )
     return rate or {}
 
 

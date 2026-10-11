@@ -86,15 +86,15 @@ class AntigravityUsageTests(unittest.TestCase):
             )
             con.commit()
             con.close()
-            events = list(
-                antigravity.iter_usage(root, "antigravity.app", "app")
-            )
+            events = list(antigravity.iter_usage(root, "antigravity.app", "app"))
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0]["session_id"], cid)
             self.assertEqual(events[0]["model"], "gemini-3-pro-high")
             self.assertEqual(events[0]["input_tokens"], 10)
 
-    def test_antigravity_unknown_enum_preserves_model_id_and_reports_output_invariant_warning(self):
+    def test_antigravity_unknown_enum_preserves_model_id_and_reports_output_invariant_warning(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             conv = root / "conversations"
@@ -120,7 +120,9 @@ class AntigravityUsageTests(unittest.TestCase):
 
             self.assertEqual(result["events"][0]["model_id"], 999)
             self.assertEqual(result["events"][0]["model"], "antigravity-model-999")
-            self.assertEqual(result["events"][0]["event_key"], "antigravity:session-1:step:7")
+            self.assertEqual(
+                result["events"][0]["event_key"], "antigravity:session-1:step:7"
+            )
             self.assertEqual(result["warnings"][0]["code"], "output_invariant_mismatch")
 
 
@@ -406,8 +408,7 @@ class ClaudeCodexUsageTests(unittest.TestCase):
 
             batch = codex.collect_usage(home / ".codex")
             statuses = {
-                item["execution_id"]: item["status"]
-                for item in batch["reconciliation"]
+                item["execution_id"]: item["status"] for item in batch["reconciliation"]
             }
             aggregate = usage_mod.aggregate_usage(
                 sources=["codex.home"], home=home, env={}
@@ -492,9 +493,15 @@ class AggregateUsageTests(unittest.TestCase):
             },
         ]
         table = {"per_million": {"gpt-known": {"input": 1.0, "output": 2.0}}}
-        with mock.patch.object(usage_mod, "resolve_sources", return_value=[source]), mock.patch.object(
-            usage_mod, "_collect_source_usage", return_value={"events": events, "warnings": [], "reconciliation": []}
-        ), mock.patch.object(usage_mod.prices_mod, "DEFAULT_PRICES", table):
+        with (
+            mock.patch.object(usage_mod, "resolve_sources", return_value=[source]),
+            mock.patch.object(
+                usage_mod,
+                "_collect_source_usage",
+                return_value={"events": events, "warnings": [], "reconciliation": []},
+            ),
+            mock.patch.object(usage_mod.prices_mod, "DEFAULT_PRICES", table),
+        ):
             result = usage_mod.aggregate_usage(sources=["codex.home"])
 
         coverage = result["pricing_coverage"]
@@ -524,8 +531,13 @@ class AggregateUsageTests(unittest.TestCase):
             {**base, "event_key": "one", "provider": "openai"},
             {**base, "event_key": "two", "provider": "anthropic"},
         ]
-        with mock.patch.object(usage_mod, "resolve_sources", return_value=[source]), mock.patch.object(
-            usage_mod, "_collect_source_usage", return_value={"events": events, "warnings": [], "reconciliation": []}
+        with (
+            mock.patch.object(usage_mod, "resolve_sources", return_value=[source]),
+            mock.patch.object(
+                usage_mod,
+                "_collect_source_usage",
+                return_value={"events": events, "warnings": [], "reconciliation": []},
+            ),
         ):
             result = usage_mod.aggregate_usage(sources=["codex.home"])
 
@@ -604,12 +616,7 @@ class AggregateUsageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home = pathlib.Path(tmp)
             root = home / ".claude"
-            path = (
-                root
-                / "projects"
-                / "-Users-demo-Projects-demoApp"
-                / "s1.jsonl"
-            )
+            path = root / "projects" / "-Users-demo-Projects-demoApp" / "s1.jsonl"
             path.parent.mkdir(parents=True)
             lines = []
             for day, model, tokens in (

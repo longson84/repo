@@ -35,7 +35,9 @@ def _text_from_message(message: Any) -> Optional[str]:
     return None
 
 
-def _first_user_preview(path: Path) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+def _first_user_preview(
+    path: Path,
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Return preview, cwd, session_id, started_at from a Claude jsonl transcript."""
     preview = cwd = session_id = started = None
     try:
@@ -152,7 +154,9 @@ def list_sessions(root: Path, source_id: str = "claude.code") -> list[dict]:
                 }
             )
         updated = _mtime_iso(path)
-        if updated and (not current.get("updated_at") or updated > current["updated_at"]):
+        if updated and (
+            not current.get("updated_at") or updated > current["updated_at"]
+        ):
             current["updated_at"] = updated
     return list(grouped.values())
 
@@ -197,7 +201,9 @@ def usage_files(root: Path, source_id: str = "claude.code") -> list[dict[str, An
     if not projects.is_dir():
         return []
     try:
-        files = sorted(path for path in projects.rglob("*.jsonl") if not path.name.startswith("."))
+        files = sorted(
+            path for path in projects.rglob("*.jsonl") if not path.name.startswith(".")
+        )
     except OSError:
         return []
     descriptors = []
@@ -236,12 +242,21 @@ def parse_usage_file(descriptor: Mapping[str, Any]) -> dict[str, Any]:
                 try:
                     row = json.loads(line)
                 except json.JSONDecodeError:
-                    warnings.append({"code": "malformed_json", "source_id": source_id, "path": str(path), "line": line_number})
+                    warnings.append(
+                        {
+                            "code": "malformed_json",
+                            "source_id": source_id,
+                            "path": str(path),
+                            "line": line_number,
+                        }
+                    )
                     continue
                 if cwd is None and isinstance(row.get("cwd"), str):
                     cwd = row["cwd"]
                     project = project_name(cwd) or project
-                if row.get("type") != "assistant" or not isinstance(row.get("message"), dict):
+                if row.get("type") != "assistant" or not isinstance(
+                    row.get("message"), dict
+                ):
                     continue
                 message = row["message"]
                 usage = message.get("usage")
@@ -292,7 +307,9 @@ def parse_usage_file(descriptor: Mapping[str, Any]) -> dict[str, Any]:
                     }
                 )
     except OSError:
-        warnings.append({"code": "read_error", "source_id": source_id, "path": str(path)})
+        warnings.append(
+            {"code": "read_error", "source_id": source_id, "path": str(path)}
+        )
     return merge_usage_batches(
         [{"events": events, "reconciliation": [], "warnings": warnings}]
     )
@@ -308,9 +325,19 @@ def merge_usage_batches(batches: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             event_key = str(event["event_key"])
             previous = events.get(event_key)
             if previous is not None:
-                for key in ("input_tokens", "cached_tokens", "output_tokens", "cache_write_tokens"):
-                    event[key] = max(int(previous.get(key) or 0), int(event.get(key) or 0))
-                if previous.get("execution_kind") == "child" and event.get("execution_kind") != "child":
+                for key in (
+                    "input_tokens",
+                    "cached_tokens",
+                    "output_tokens",
+                    "cache_write_tokens",
+                ):
+                    event[key] = max(
+                        int(previous.get(key) or 0), int(event.get(key) or 0)
+                    )
+                if (
+                    previous.get("execution_kind") == "child"
+                    and event.get("execution_kind") != "child"
+                ):
                     event["execution_key"] = previous["execution_key"]
                     event["execution_kind"] = "child"
             events[event_key] = event

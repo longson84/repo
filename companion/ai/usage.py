@@ -134,15 +134,15 @@ def _usage_descriptors(source: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def _sorted_cost(rows: dict[str, dict[str, Any]], key: str) -> list[dict[str, Any]]:
     items = list(rows.values())
-    items.sort(key=lambda row: (-float(row.get("cost_usd") or 0), str(row.get(key) or "")))
+    items.sort(
+        key=lambda row: (-float(row.get("cost_usd") or 0), str(row.get(key) or ""))
+    )
     for row in items:
         row["cost_usd"] = round(float(row["cost_usd"]), 6)
     return items
 
 
-def _period_bucket(
-    store: dict[str, dict[str, Any]], period: str
-) -> dict[str, Any]:
+def _period_bucket(store: dict[str, dict[str, Any]], period: str) -> dict[str, Any]:
     bucket = store.get(period)
     if bucket is None:
         bucket = {
@@ -444,6 +444,20 @@ def aggregate_usage(
     total_events = len(unique_events)
     unpriced_events = total_events - priced_events
     total_token_count = priced_tokens["total"] + unpriced_tokens["total"]
+    conversation_count = len(
+        {
+            str(event["conversation_key"])
+            for event in unique_events.values()
+            if event.get("conversation_key")
+        }
+    )
+    execution_count = len(
+        {
+            str(event["execution_key"])
+            for event in unique_events.values()
+            if event.get("execution_key")
+        }
+    )
     pricing_coverage = {
         "priced_events": priced_events,
         "unpriced_events": unpriced_events,
@@ -487,6 +501,9 @@ def aggregate_usage(
             "path": str(price_file) if price_file else None,
         },
         "totals": totals,
+        "conversation_count": conversation_count,
+        "execution_count": execution_count,
+        "event_count": len(unique_events),
         "by_date": by_day_rows,
         "by_day": by_day_rows,
         "by_week": by_week_rows,
