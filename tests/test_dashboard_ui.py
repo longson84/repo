@@ -23,7 +23,8 @@ function element() {
 const nodes = new Map();
 const document = {
   getElementById(id) { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); },
-  querySelectorAll() { return []; }, addEventListener() {}, activeElement: element(),
+  querySelectorAll() { return []; }, querySelector() { return null; },
+  addEventListener() {}, activeElement: element(),
 };
 const context = {
   console, document, location: {hash: '#/', search: '', pathname: '/'},
@@ -172,7 +173,8 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
             "project_name:'Group',tracked:false}],"
             "['/work/unknown',{workspace_id:'/work/unknown',workspace_name:'Unknown',path:'/work/unknown',"
             "repository_id:null,repository_name:null,project_id:null,project_name:null,tracked:true}]"
-            "]),new Set(['remote:example/shared']),{version:1,projects:[]})"
+            "]),new Set(['remote:example/shared']),{version:1,projects:[{id:'group',name:'Group',"
+            "repositories:['remote:example/shared'],primary_workspaces:{},workspace_aliases:[]}]})"
         )
 
         self.assertEqual(html.count('data-group-repository="remote:example/shared"'), 2)
@@ -230,6 +232,10 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
         self.assertRegex(
             html,
             r'data-delete-project="history"[^>]*disabled',
+        )
+        self.assertRegex(
+            html,
+            r'data-ungroup-project="history"[^>]*disabled',
         )
         self.assertIn("historical aliases or primary workspaces", html)
         self.assertRegex(html, r'data-delete-project="plain"(?![^>]*disabled)')
@@ -349,10 +355,16 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
         result = self.render(
             "(() => { fetch=async(_url,options)=>({ok:true,status:200,json:async()=>({version:1,"
             "projects:JSON.parse(options.body).projects,fingerprint:'fresh',warnings:[]})});"
-            "paired=true; aiUsage={totals:{input_tokens:99}}; aiUsageInvalidatedByIdentity=false; let closed=0;"
+            "paired=true; paths=['/work/old']; aiUsage={totals:{input_tokens:99}};"
+            "aiUsageInvalidatedByIdentity=false;"
+            "statsByPath={'/work/old':{commitCount:7}}; statsProjects=[{project_id:'old',"
+            "project_name:'Old grouping',commitCount:7,repositories:[]}];"
+            "gitStatsInvalidatedByIdentity=false; let closed=0;"
             "return persistProjectIdentityChange({version:1,projects:[]},'old',{"
             "closeDrawer:()=>{closed+=1},refresh:()=>Promise.reject(new Error('offline'))})"
             ".then(result=>({status:result.status,closed,aiUsage,invalidated:aiUsageInvalidatedByIdentity,"
+            "gitInvalidated:gitStatsInvalidatedByIdentity,statsProjects,statsByPath,"
+            "numbers:portfolioNumbers(),statsPanel:(paintStats(),document.getElementById('statsView').innerHTML),"
             "message:document.getElementById('toast').textContent,panel:paintAiTokensPanel()})); })()"
         )
 
@@ -360,6 +372,12 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
         self.assertEqual(result["closed"], 1)
         self.assertIsNone(result["aiUsage"])
         self.assertTrue(result["invalidated"])
+        self.assertTrue(result["gitInvalidated"])
+        self.assertEqual(result["statsProjects"], [])
+        self.assertEqual(result["statsByPath"], {})
+        self.assertEqual(result["numbers"]["commits"], 0)
+        self.assertNotIn("Old grouping", result["statsPanel"])
+        self.assertIn("Project grouping changed", result["statsPanel"])
         self.assertIn("Project saved; scan failed", result["message"])
         self.assertIn("Project grouping changed", result["panel"])
         self.assertIn("Aggregate", result["panel"])
@@ -383,6 +401,78 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
         )
 
         self.assertEqual(result, {"message": "Another scan is already running."})
+
+    def test_successful_scan_refreshes_workspace_identity_and_clears_git_staleness(
+        self,
+    ):
+        result = self.render(
+            "(() => { paired=true; paths=['/work/a']; gitStatsInvalidatedByIdentity=true;"
+            "workspaces=[{workspace_id:'/work/a',path:'/work/a',repository_id:'repo:a',"
+            "project_id:'old',project_name:'Old grouping'}]; let calls=0;"
+            "fetch=async()=>{calls+=1; return {ok:true,status:200,json:async()=>calls===1?"
+            "{machine:'test',scannedAt:'2026-10-11T00:00:00Z',repositories:[{workspace_id:'/work/a',"
+            "path:'/work/a',name:'a',repository_id:'repo:a',project_id:'repo:a',project_name:'a',modified:0,"
+            "untracked:0}]}:{repositories:[],projects:[]}}};"
+            "return runScan({throwOnError:true}).then(()=>({workspaceProject:workspaces[0].project_id,"
+            "invalidated:gitStatsInvalidatedByIdentity})); })()"
+        )
+
+        self.assertEqual(result, {"workspaceProject": "repo:a", "invalidated": False})
+
+    def test_manager_does_not_fall_back_to_obsolete_project_snapshot(self):
+        html = self.render(
+            "projectManagerRows(new Map([['/work/a',{workspace_id:'/work/a',path:'/work/a',"
+            "workspace_name:'a',repository_id:'repo:a',repository_name:'a',project_id:'old',"
+            "project_name:'Old grouping',tracked:true}]]),new Set(),{version:1,projects:[]})"
+        )
+
+        self.assertNotIn("Old grouping", html)
+        self.assertIn("Project: a", html)
+
+    def test_project_save_gate_blocks_duplicate_submissions_and_reenables_controls(
+        self,
+    ):
+        result = self.render(
+            "(() => { const state={saving:false}; let calls=0,release;"
+            "const pending=new Promise(resolve=>{release=resolve}); const transitions=[];"
+            "const first=runProjectManagerSaveOnce(state,()=>{calls+=1; return pending},"
+            "saving=>transitions.push(saving));"
+            "const second=runProjectManagerSaveOnce(state,()=>{calls+=1},"
+            "saving=>transitions.push(saving)); const during=state.saving; release('saved');"
+            "return Promise.all([first,second]).then(values=>({calls,during,after:state.saving,"
+            "transitions,values})); })()"
+        )
+
+        self.assertEqual(result["calls"], 1)
+        self.assertTrue(result["during"])
+        self.assertFalse(result["after"])
+        self.assertEqual(result["transitions"], [True, False])
+        self.assertEqual(result["values"], ["saved", {"status": "busy"}])
+
+    def test_project_save_control_restore_keeps_protected_actions_disabled(self):
+        result = self.render(
+            "(() => { const active={disabled:false},protectedAction={disabled:true};"
+            "document.querySelectorAll=()=>[active,protectedAction];"
+            "setProjectManagerSaving(true); const during=[active.disabled,protectedAction.disabled];"
+            "setProjectManagerSaving(false); return {during,after:[active.disabled,"
+            "protectedAction.disabled]}; })()"
+        )
+
+        self.assertEqual(result["during"], [True, True])
+        self.assertEqual(result["after"], [False, True])
+
+    def test_identity_warning_message_distinguishes_invalid_from_empty_config(self):
+        result = self.render(
+            "({invalid:projectIdentityWarningsMessage({warnings:[{code:'invalid_identity_config'}]}),"
+            "row:projectIdentityWarningsMessage({warnings:[{code:'workspace_missing',"
+            "workspace_id:'/old/worktree'}]}),empty:projectIdentityWarningsMessage({warnings:[]})})"
+        )
+
+        self.assertIn("invalid", result["invalid"].lower())
+        self.assertIn("editing is disabled", result["invalid"].lower())
+        self.assertIn("workspace_missing", result["row"])
+        self.assertIn("/old/worktree", result["row"])
+        self.assertEqual(result["empty"], "Project grouping is ready.")
 
     def test_project_manager_row_wraps_distinct_accessible_controls(self):
         html = self.render(

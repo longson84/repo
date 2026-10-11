@@ -82,26 +82,29 @@ process.stdout.write(JSON.stringify(output));
             projects["general"]["primary_workspaces"], {"repo:one": "/work/one"}
         )
 
-    def test_standalone_removes_selected_membership_and_prunes_only_plain_empty_project(
-        self,
-    ):
+    def test_standalone_refuses_to_discard_primary_workspace_mapping(self):
         result = self.evaluate(
             "(() => { const input={version:1,projects:["
             "{id:'plain',name:'Plain',repositories:['repo:one'],primary_workspaces:{},workspace_aliases:[]},"
             "{id:'history',name:'History',repositories:['repo:two','repo:hidden'],"
             "primary_workspaces:{'repo:two':'/work/two'},workspace_aliases:['/old/two']} ]};"
-            "const before=JSON.stringify(input); const output=makeRepositoriesStandalone("
-            "input,['repo:one','repo:two','repo:two']); return {beforeUnchanged:JSON.stringify(input)===before,output}; })()"
+            "const before=JSON.stringify(input); let message=''; try { makeRepositoriesStandalone("
+            "input,['repo:one','repo:two','repo:two']); } catch(error) { message=error.message; }"
+            "return {beforeUnchanged:JSON.stringify(input)===before,message}; })()"
         )
 
         self.assertTrue(result["beforeUnchanged"])
-        self.assertEqual(
-            [project["id"] for project in result["output"]["projects"]], ["history"]
+        self.assertIn("primary workspace", result["message"].lower())
+
+    def test_standalone_removes_plain_membership_and_prunes_plain_empty_project(self):
+        result = self.evaluate(
+            "(() => { const input={version:1,projects:["
+            "{id:'plain',name:'Plain',repositories:['repo:one'],primary_workspaces:{},workspace_aliases:[]},"
+            "{id:'history',name:'History',repositories:['repo:hidden'],primary_workspaces:{},"
+            "workspace_aliases:['/old/two']} ]}; return makeRepositoriesStandalone(input,['repo:one']); })()"
         )
-        history = result["output"]["projects"][0]
-        self.assertEqual(history["repositories"], ["repo:hidden"])
-        self.assertEqual(history["primary_workspaces"], {})
-        self.assertEqual(history["workspace_aliases"], ["/old/two"])
+
+        self.assertEqual([project["id"] for project in result["projects"]], ["history"])
 
     def test_rename_preserves_identity_fields_and_delete_protects_advanced_mappings(
         self,

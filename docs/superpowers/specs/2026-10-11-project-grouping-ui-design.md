@@ -61,9 +61,9 @@ A project section below the repository list shows configured project cards with:
 
 Rename changes only `name`; it preserves the stable project `id` and every repository, alias, and primary-workspace mapping.
 
-Ungroup removes selected repository memberships from that project. Those live repositories return to the default one-project-per-repository behavior. If the project becomes empty and has no historical aliases or primary-workspace mappings, its empty configuration entry is removed. Otherwise the entry is retained.
+Ungroup removes selected repository memberships from that project. Those live repositories return to the default one-project-per-repository behavior. If any selected repository has a primary-workspace mapping, the UI refuses the operation instead of silently discarding that mapping. If the project becomes empty and has no historical aliases or primary-workspace mappings, its empty configuration entry is removed. Otherwise the entry is retained.
 
-Delete removes the project entry only when it has no `workspace_aliases` and no `primary_workspaces`. A project containing either form of advanced identity evidence cannot be deleted in the UI; the drawer explains that the user may ungroup live repositories while the historical mappings remain protected. Deleting a permitted project never deletes repositories, workspaces, Git data, AI events, or tracked selections.
+Delete removes the project entry only when it has no `workspace_aliases` and no `primary_workspaces`. A project containing either form of advanced identity evidence cannot be deleted in the UI. Historical aliases can remain while live repositories are ungrouped, but a primary-workspace mapping must be removed explicitly before its repository can be ungrouped. Deleting a permitted project never deletes repositories, workspaces, Git data, AI events, or tracked selections.
 
 ## Project Names and IDs
 
@@ -113,7 +113,7 @@ Create the normalized project entry, then apply the same reassignment operation.
 
 ### Make standalone
 
-Remove selected repository IDs and their primary mappings from configured projects. Do not create explicit standalone configuration; the resolver's default repository identity becomes authoritative.
+Refuse the operation when a selected repository has a primary mapping. Otherwise remove the selected repository IDs from configured projects. Do not create explicit standalone configuration; the resolver's default repository identity becomes authoritative.
 
 ### Rename
 

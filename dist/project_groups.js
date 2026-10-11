@@ -102,6 +102,15 @@ function assignRepositories(config, repositoryIds, target) {
 
 function makeRepositoriesStandalone(config, repositoryIds) {
   const next = cloneProjectConfig(config);
+  const selected = new Set(uniqueRepositoryIds(repositoryIds));
+  const protectedPrimary = next.projects.some((project) =>
+    Object.keys(project.primary_workspaces).some((repositoryId) => selected.has(repositoryId)),
+  );
+  if (protectedPrimary) {
+    throw new Error(
+      'Remove the protected primary workspace mapping before making this standalone.',
+    );
+  }
   removeRepositoryMemberships(next, repositoryIds);
   next.projects = next.projects.filter(
     (project) =>

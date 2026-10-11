@@ -20,6 +20,7 @@ let repos = [],
   statsBusy = false,
   statsByPath = {},
   statsProjects = [],
+  gitStatsInvalidatedByIdentity = false,
   detailPath = null,
   detailPeriod = 'day',
   detailCursor = null,
@@ -34,6 +35,7 @@ let repos = [],
   sortDir = 1;
 const statsExpandedProjects = new Set();
 const statsExpandedRepositories = new Set();
+const projectManagerDisabledState = new WeakMap();
 const base = 'http://127.0.0.1:48731';
 const TOKEN_KEY = 'repo.companion.token';
 function readStoredToken() {
@@ -62,6 +64,7 @@ function clearPairing() {
   scannedAt = null;
   statsByPath = {};
   statsProjects = [];
+  gitStatsInvalidatedByIdentity = false;
   writeStoredToken('');
 }
 function applyStatus(result) {
@@ -532,9 +535,11 @@ function render() {
     $('statsCoverageStat').textContent = `${pulse.cached}/${pulse.tracked}`;
     $('statsCoverageLabel').textContent = hasCache
       ? 'Cached / tracked'
-      : statsBusy || busy
-        ? 'Scanning…'
-        : 'Run Scan to fill stats';
+      : gitStatsInvalidatedByIdentity
+        ? 'Grouping changed · Scan to rebuild'
+        : statsBusy || busy
+          ? 'Scanning…'
+          : 'Run Scan to fill stats';
   }
   $('machineTitle').innerHTML = other
     ? 'Second machine <span>NOT SCANNED</span>'
@@ -2225,9 +2230,11 @@ function paintStats() {
       ? '<div class="callout">Connect the companion to load local Git stats.</div>'
       : !paths.length
         ? '<div class="callout">Track repositories first, then Scan.</div>'
-        : !hasCache
-          ? '<div class="callout">No cached stats yet. Click Scan to refresh sync status and portfolio stats.</div>'
-          : ''}
+        : gitStatsInvalidatedByIdentity
+          ? '<div class="callout">Project grouping changed. Click Scan to rebuild Git attribution and portfolio totals.</div>'
+          : !hasCache
+            ? '<div class="callout">No cached stats yet. Click Scan to refresh sync status and portfolio stats.</div>'
+            : ''}
     <section class="stats-section">
       <div class="section-head">
         <h2>Activity</h2>
@@ -2834,10 +2841,16 @@ function projectManagerRows(choices, selectedRepositoryIds, identityConfig) {
   return rows
     .map((row) => {
       const configured = configuredProjectForRepository(identityConfig, row.repository_id);
-      const projectId = configured?.id || row.project_id || '';
-      const projectName = configured?.name || row.project_name || 'Unresolved';
+      const hasCurrentConfig = identityConfig !== null;
+      const projectId =
+        configured?.id || (hasCurrentConfig ? row.repository_id : row.project_id) || '';
+      const projectName =
+        configured?.name ||
+        (hasCurrentConfig ? row.repository_name : row.project_name) ||
+        'Unresolved';
       const repositoryName = row.repository_name || row.workspace_name || row.path;
-      const groupingDisabled = !identityConfig || !row.repository_id;
+      const groupingDisabled =
+        !identityConfig || !row.repository_id || !projectIdentityConfigEditable(identityConfig);
       const groupingLabel = `Select ${repositoryName} for grouping`;
       const trackingLabel = `Track ${row.workspace_name || row.path}`;
       return /* HTML */ `
@@ -2916,7 +2929,7 @@ function projectBulkEditor(config, selectedRepositoryIds, mode = 'existing') {
   `;
 }
 
-function configuredProjectCards(config, visibleRepositoryIds) {
+function configuredProjectCards(config, visibleRepositoryIds, editingDisabled = false) {
   const visibleOccurrences = [...(visibleRepositoryIds || [])].filter(Boolean);
   const visible = new Set(visibleOccurrences);
   const projects = config?.projects || [];
@@ -2930,9 +2943,8 @@ function configuredProjectCards(config, visibleRepositoryIds) {
       const hiddenRepositoryCount = repositories.filter(
         (repositoryId) => !visible.has(repositoryId),
       ).length;
-      const protectedMappings =
-        (project.workspace_aliases || []).length ||
-        Object.keys(project.primary_workspaces || {}).length;
+      const primaryMappingCount = Object.keys(project.primary_workspaces || {}).length;
+      const protectedMappings = (project.workspace_aliases || []).length || primaryMappingCount;
       return /* HTML */ `
         <section class="configured-project-card" data-configured-project="${esc(project.id)}">
           <div>
@@ -2945,14 +2957,19 @@ function configuredProjectCards(config, visibleRepositoryIds) {
             </p>
           </div>
           <div class="project-row-actions">
-            <button class="btn" type="button" data-rename-project="${esc(project.id)}">
+            <button
+              class="btn"
+              type="button"
+              data-rename-project="${esc(project.id)}"
+              ${editingDisabled ? 'disabled' : ''}
+            >
               Rename
             </button>
             <button
               class="btn"
               type="button"
               data-ungroup-project="${esc(project.id)}"
-              ${repositories.length ? '' : 'disabled'}
+              ${repositories.length && !primaryMappingCount && !editingDisabled ? '' : 'disabled'}
             >
               Ungroup repositories
             </button>
@@ -2960,13 +2977,15 @@ function configuredProjectCards(config, visibleRepositoryIds) {
               class="btn"
               type="button"
               data-delete-project="${esc(project.id)}"
-              ${protectedMappings ? 'disabled' : ''}
+              ${protectedMappings || editingDisabled ? 'disabled' : ''}
             >
               Delete project
             </button>
           </div>
           ${protectedMappings
-            ? '<p class="small">Delete is unavailable while historical aliases or primary workspaces are protected.</p>'
+            ? `<p class="small">${
+                primaryMappingCount ? 'Ungroup and delete' : 'Delete'
+              } is unavailable while historical aliases or primary workspaces are protected.</p>`
             : ''}
           <div data-project-inline-editor="${esc(project.id)}"></div>
         </section>
@@ -3052,6 +3071,48 @@ function showProjectManagerError(error) {
   $('settingsError').textContent = error?.message || String(error);
 }
 
+function projectIdentityConfigEditable(config) {
+  return !(config?.warnings || []).some((warning) => warning.code === 'invalid_identity_config');
+}
+
+function projectIdentityWarningsMessage(config) {
+  const warnings = config?.warnings || [];
+  if (!warnings.length) return 'Project grouping is ready.';
+  if (!projectIdentityConfigEditable(config)) {
+    return 'Project grouping file is invalid; grouping editing is disabled until the file is fixed.';
+  }
+  const details = warnings.map((warning) =>
+    [warning.code, warning.workspace_id].filter(Boolean).join(' — '),
+  );
+  return `Project grouping loaded with warnings: ${details.join('; ')}.`;
+}
+
+async function runProjectManagerSaveOnce(state, operation, onSaving = () => {}) {
+  if (state.saving) return { status: 'busy' };
+  state.saving = true;
+  onSaving(true);
+  try {
+    return await operation();
+  } finally {
+    state.saving = false;
+    onSaving(false);
+  }
+}
+
+function setProjectManagerSaving(saving) {
+  document
+    .querySelectorAll('#drawerBody button, #drawerBody input, #drawerBody select')
+    .forEach((control) => {
+      if (saving) {
+        projectManagerDisabledState.set(control, control.disabled);
+        control.disabled = true;
+      } else if (projectManagerDisabledState.has(control)) {
+        control.disabled = projectManagerDisabledState.get(control);
+        projectManagerDisabledState.delete(control);
+      }
+    });
+}
+
 function restoreProjectManagerFocus(selector) {
   document.querySelector(selector)?.focus();
 }
@@ -3089,7 +3150,11 @@ async function persistProjectIdentityChange(draft, fingerprint, hooks = {}) {
   aiUsagePeriodKey = null;
   aiUsageExpandedProjects.clear();
   aiUsageExpandedModels.clear();
+  statsByPath = {};
+  statsProjects = [];
+  gitStatsInvalidatedByIdentity = true;
   (hooks.closeDrawer || close)();
+  render();
 
   try {
     await (hooks.refresh || (() => runScan({ throwOnError: true })))();
@@ -3111,6 +3176,7 @@ async function manage() {
   let bulkAssignmentMode = 'existing';
   let lifecycleEditor = null;
   let persistTimer = 0;
+  const projectSaveState = { saving: false };
   open(
     /* HTML */ `
       <h3 id="dialogTitle">Manage tracked repos</h3>
@@ -3169,6 +3235,7 @@ async function manage() {
       return;
     }
     const visibleRepositoryIds = [...choices.values()].map((row) => row.repository_id);
+    const groupingLocked = !projectIdentityConfigEditable(identityConfig);
     $('projectManagerActions').innerHTML = /* HTML */ `
       <div class="project-bulk-toolbar">
         <strong>${selectedRepositoryIds.size} selected</strong>
@@ -3177,7 +3244,7 @@ async function manage() {
             class="btn primary"
             type="button"
             id="groupSelected"
-            ${selectedRepositoryIds.size ? '' : 'disabled'}
+            ${selectedRepositoryIds.size && !groupingLocked ? '' : 'disabled'}
           >
             Group selected
           </button>
@@ -3196,7 +3263,7 @@ async function manage() {
         : ''}
       <h4>Configured projects</h4>
       <div class="configured-project-list">
-        ${configuredProjectCards(identityConfig, visibleRepositoryIds)}
+        ${configuredProjectCards(identityConfig, visibleRepositoryIds, groupingLocked)}
       </div>
     `;
     if (lifecycleEditor) {
@@ -3214,22 +3281,34 @@ async function manage() {
   };
   const completeProjectAction = async (action, focusSelector) => {
     try {
-      let outcome = null;
-      identityConfig = await submitProjectManagerAction(identityConfig, action, async (draft) => {
-        outcome = await persistProjectIdentityChange(draft, identityConfig.fingerprint);
-        return outcome.config;
-      });
-      if (outcome.status === 'conflict') {
-        draw();
-        $('settingsError').textContent =
-          'Project grouping changed in another editor. Review the latest configuration and repeat your action.';
-        return;
-      }
-      bulkEditorMode = null;
-      lifecycleEditor = null;
-      selectedRepositoryIds.clear();
+      await runProjectManagerSaveOnce(
+        projectSaveState,
+        async () => {
+          let outcome = null;
+          identityConfig = await submitProjectManagerAction(
+            identityConfig,
+            action,
+            async (draft) => {
+              outcome = await persistProjectIdentityChange(draft, identityConfig.fingerprint);
+              return outcome.config;
+            },
+          );
+          if (outcome.status === 'conflict') {
+            draw();
+            $('settingsError').textContent =
+              'Project grouping changed in another editor. Review the latest configuration and repeat your action.';
+            return outcome;
+          }
+          bulkEditorMode = null;
+          lifecycleEditor = null;
+          selectedRepositoryIds.clear();
+          return outcome;
+        },
+        setProjectManagerSaving,
+      );
     } catch (error) {
       showProjectManagerError(error);
+      restoreProjectManagerFocus(focusSelector);
     }
   };
   const bindProjectManagerActions = () => {
@@ -3382,7 +3461,7 @@ async function manage() {
   try {
     identityConfig = await api('project-identities');
     draw();
-    $('settingsError').textContent = 'Project grouping is ready.';
+    $('settingsError').textContent = projectIdentityWarningsMessage(identityConfig);
   } catch (error) {
     $('settingsError').textContent = `Could not load project grouping: ${error.message}`;
   }
@@ -3406,6 +3485,7 @@ async function runScan(options = {}) {
   try {
     const result = await api('scan', {});
     repos = result.repositories;
+    workspaces = Array.isArray(result.repositories) ? result.repositories : workspaces;
     machineName = result.machine;
     scannedAt = result.scannedAt;
     activity.unshift(
@@ -3413,6 +3493,7 @@ async function runScan(options = {}) {
     );
     const stats = await api('stats', { all: true, refresh: true });
     mergeStats(stats.repositories, stats.projects);
+    gitStatsInvalidatedByIdentity = false;
     activity.unshift(
       `Loaded portfolio stats for ${(stats.repositories || []).length} repositories`,
     );
