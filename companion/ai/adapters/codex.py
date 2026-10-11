@@ -139,6 +139,8 @@ def iter_usage(root: Path, source_id: str = "codex.home") -> Iterator[dict[str, 
     for path in files:
         session_id = path.stem
         model = "gpt-5.5"
+        cwd = None
+        project = "unknown"
         try:
             with path.open(encoding="utf-8", errors="replace") as handle:
                 for line in handle:
@@ -157,10 +159,16 @@ def iter_usage(root: Path, source_id: str = "codex.home") -> Iterator[dict[str, 
                         sid = payload.get("id") or payload.get("session_id")
                         if sid:
                             session_id = str(sid)
+                        if isinstance(payload.get("cwd"), str):
+                            cwd = payload["cwd"]
+                            project = project_name(cwd) or "unknown"
                         continue
                     if typ == "turn_context":
                         if isinstance(payload.get("model"), str):
                             model = payload["model"]
+                        if cwd is None and isinstance(payload.get("cwd"), str):
+                            cwd = payload["cwd"]
+                            project = project_name(cwd) or project
                         continue
                     if typ != "event_msg" or payload.get("type") != "token_count":
                         continue
@@ -182,6 +190,8 @@ def iter_usage(root: Path, source_id: str = "codex.home") -> Iterator[dict[str, 
                         "tool": "codex",
                         "surface": "cli+app",
                         "model": model,
+                        "project": project,
+                        "cwd": cwd,
                         "date": _date_from_ts(row.get("timestamp")),
                         "input_tokens": uncached,
                         "cached_tokens": cached,

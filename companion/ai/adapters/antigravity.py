@@ -308,6 +308,30 @@ def list_sessions(root: Path, source_id: str, surface: str) -> list[dict]:
     return list(by_id.values())
 
 
+def _project_map(root: Path) -> dict[str, str]:
+    """Map conversation_id → project name from summaries (and light transcript fallback)."""
+    root = Path(root)
+    mapping: dict[str, str] = {}
+    summaries_db = root / "conversation_summaries.db"
+    if summaries_db.is_file():
+        try:
+            con = sqlite3.connect(f"file:{summaries_db}?mode=ro", uri=True)
+            rows = con.execute(
+                "SELECT conversation_id, workspace_uris FROM conversation_summaries"
+            ).fetchall()
+            con.close()
+        except sqlite3.Error:
+            rows = []
+        for cid, workspace_uris in rows:
+            if not cid:
+                continue
+            cwd = _workspace_from_uris(workspace_uris)
+            name = project_name(cwd)
+            if name:
+                mapping[str(cid)] = name
+    return mapping
+
+
 def iter_usage(
     root: Path, source_id: str, surface: str
 ) -> Iterator[dict[str, Any]]:
@@ -316,12 +340,26 @@ def iter_usage(
     conv_dir = root / "conversations"
     if not conv_dir.is_dir():
         return
+    projects = _project_map(root)
     try:
         dbs = sorted(conv_dir.glob("*.db"))
     except OSError:
         return
     for db in dbs:
         session_id = db.stem
+        project = projects.get(session_id)
+        if project is None:
+            transcript = (
+                root
+                / "brain"
+                / session_id
+                / ".system_generated"
+                / "logs"
+                / "transcript_full.jsonl"
+            )
+            _, cwd = _preview_and_cwd_from_transcript(transcript)
+            project = project_name(cwd) or "unknown"
+            projects[session_id] = project
         try:
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         except sqlite3.Error:
@@ -359,6 +397,7 @@ def iter_usage(
                 "surface": surface,
                 "model": parsed["model"],
                 "model_id": parsed.get("model_id"),
+                "project": project,
                 "date": parsed.get("date") or fallback_date,
                 "input_tokens": parsed["input_tokens"],
                 "cached_tokens": parsed["cached_tokens"],

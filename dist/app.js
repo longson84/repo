@@ -648,7 +648,7 @@ let aiSessionFilter = {
 let aiUsageFilter = {
   source: '',
 };
-let aiUsageGroup = 'model'; // model | period | surface | tool
+let aiUsageGroup = 'model'; // model | project | period | surface | tool
 let aiUsagePeriod = 'month'; // day | week | month | year
 let aiUsagePeriodKey = null; // selected period key within aiUsagePeriod
 let aiSearchFilter = {
@@ -1031,6 +1031,7 @@ function paintAiTokensPanel() {
     .join('');
   const groupOptions = [
     ['model', 'By model'],
+    ['project', 'By project'],
     ['period', 'By period'],
     ['surface', 'By surface'],
     ['tool', 'By tool'],
@@ -1056,7 +1057,7 @@ function paintAiTokensPanel() {
   const canNext = selectedIndex > 0;
 
   const scopeTotals =
-    aiUsageGroup === 'model' && selectedPeriod
+    (aiUsageGroup === 'model' || aiUsageGroup === 'project') && selectedPeriod
       ? selectedPeriod
       : aiUsage?.totals;
   const meta = aiUsage
@@ -1091,6 +1092,17 @@ function paintAiTokensPanel() {
       rows = usageDataRows(list, (item) => item.model || '—');
       totalRow = usageTotalRow(selectedPeriod);
     }
+  } else if (aiUsageGroup === 'project') {
+    firstCol = 'Project';
+    const list = selectedPeriod?.by_project || [];
+    if (!selectedPeriod) {
+      rows = `<tr><td colspan="6"><div class="callout">No dated usage events found.</div></td></tr>`;
+    } else if (!list.length) {
+      rows = `<tr><td colspan="6"><div class="callout">No project usage in ${esc(formatAiPeriodLabel(selectedKey))}.</div></td></tr>`;
+    } else {
+      rows = usageDataRows(list, (item) => item.project || '—');
+      totalRow = usageTotalRow(selectedPeriod);
+    }
   } else if (aiUsageGroup === 'surface') {
     firstCol = 'Surface';
     const list = aiUsage.by_surface || [];
@@ -1112,11 +1124,14 @@ function paintAiTokensPanel() {
   }
 
   const periodNav =
-    aiUsage && (aiUsageGroup === 'model' || aiUsageGroup === 'period')
+    aiUsage &&
+    (aiUsageGroup === 'model' ||
+      aiUsageGroup === 'project' ||
+      aiUsageGroup === 'period')
       ? `<div class="ai-period-nav">
           <div class="period-tabs">${periodTabs}</div>
           ${
-            aiUsageGroup === 'model'
+            aiUsageGroup === 'model' || aiUsageGroup === 'project'
               ? `<div class="ai-period-shift">
                   <button type="button" class="btn" id="aiUsagePrev" ${!canPrev || aiBusy ? 'disabled' : ''}>←</button>
                   <strong>${esc(formatAiPeriodLabel(selectedKey))}</strong>
@@ -1127,7 +1142,7 @@ function paintAiTokensPanel() {
           }
         </div>`
       : aiUsage
-        ? `<div class="ai-period-nav"><p class="small" style="margin: 0">Surface and tool views are all-time. Switch Group to Model or Period for day/week/month/year.</p></div>`
+        ? `<div class="ai-period-nav"><p class="small" style="margin: 0">Surface and tool views are all-time. Switch Group to Model, Project, or Period for day/week/month/year.</p></div>`
         : '';
 
   const caveats = (aiUsage?.caveats || []).map((c) => `<li>${esc(c)}</li>`).join('');

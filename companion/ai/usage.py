@@ -111,6 +111,7 @@ def _period_bucket(
             **_empty_bucket(),
             "period": period,
             "_models": {},
+            "_projects": {},
         }
         store[period] = bucket
     return bucket
@@ -121,6 +122,7 @@ def _serialize_periods(store: dict[str, dict[str, Any]]) -> list[dict[str, Any]]
     for period in sorted(store.keys(), reverse=True):
         bucket = store[period]
         models = _sorted_cost(bucket.get("_models") or {}, "model")
+        projects = _sorted_cost(bucket.get("_projects") or {}, "project")
         rows.append(
             {
                 "period": period,
@@ -132,6 +134,7 @@ def _serialize_periods(store: dict[str, dict[str, Any]]) -> list[dict[str, Any]]
                 "cost_usd": round(float(bucket["cost_usd"]), 6),
                 "events": bucket["events"],
                 "by_model": models,
+                "by_project": projects,
             }
         )
     return rows
@@ -168,6 +171,7 @@ def aggregate_usage(
 
     totals = _empty_bucket()
     by_model: dict[str, dict[str, Any]] = {}
+    by_project: dict[str, dict[str, Any]] = {}
     by_surface: dict[str, dict[str, Any]] = {}
     by_tool: dict[str, dict[str, Any]] = {}
     by_source: dict[str, dict[str, Any]] = {}
@@ -210,6 +214,12 @@ def aggregate_usage(
             )
             _add(model_bucket, event, cost)
 
+            project_key = str(event.get("project") or "unknown")
+            project_bucket = by_project.setdefault(
+                project_key, {**_empty_bucket(), "project": project_key}
+            )
+            _add(project_bucket, event, cost)
+
             surface_key = f"{event.get('tool')}:{event.get('surface')}"
             surface_bucket = by_surface.setdefault(
                 surface_key,
@@ -241,6 +251,11 @@ def aggregate_usage(
                 models = bucket["_models"]
                 mb = models.setdefault(model_key, {**_empty_bucket(), "model": model_key})
                 _add(mb, event, cost)
+                projects = bucket["_projects"]
+                pb = projects.setdefault(
+                    project_key, {**_empty_bucket(), "project": project_key}
+                )
+                _add(pb, event, cost)
 
     totals["cost_usd"] = round(float(totals["cost_usd"]), 6)
     by_day_rows = _serialize_periods(by_day)
@@ -267,6 +282,7 @@ def aggregate_usage(
         "by_month": by_month_rows,
         "by_year": by_year_rows,
         "by_model": _sorted_cost(by_model, "model"),
+        "by_project": _sorted_cost(by_project, "project"),
         "by_surface": _sorted_cost(by_surface, "label"),
         "by_tool": _sorted_cost(by_tool, "tool"),
         "by_source": _sorted_cost(by_source, "source_id"),

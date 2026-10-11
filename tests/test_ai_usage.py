@@ -251,7 +251,12 @@ class AggregateUsageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home = pathlib.Path(tmp)
             root = home / ".claude"
-            path = root / "projects" / "demo" / "s1.jsonl"
+            path = (
+                root
+                / "projects"
+                / "-Users-demo-Projects-demoApp"
+                / "s1.jsonl"
+            )
             path.parent.mkdir(parents=True)
             lines = []
             for day, model, tokens in (
@@ -264,6 +269,7 @@ class AggregateUsageTests(unittest.TestCase):
                         {
                             "type": "assistant",
                             "sessionId": "s1",
+                            "cwd": "/Users/demo/Projects/demoApp",
                             "timestamp": f"{day}T12:00:00.000Z",
                             "message": {
                                 "model": model,
@@ -291,7 +297,11 @@ class AggregateUsageTests(unittest.TestCase):
             march = next(r for r in result["by_month"] if r["period"] == "2026-03")
             self.assertEqual(march["input_tokens"], 1_500_000)
             self.assertEqual(march["by_model"][0]["model"], "claude-sonnet-4-6")
+            self.assertEqual(march["by_project"][0]["project"], "demoApp")
             self.assertEqual(result["by_year"][0]["period"], "2026")
+            projects = {row["project"]: row for row in result["by_project"]}
+            self.assertIn("demoApp", projects)
+            self.assertEqual(projects["demoApp"]["input_tokens"], 2_500_000)
 
 
 if __name__ == "__main__":

@@ -113,6 +113,18 @@ def _date_from_ts(value: Any) -> Optional[str]:
         return value[:10] if len(value) >= 10 else None
 
 
+def _project_from_encoded_dir(name: str) -> Optional[str]:
+    """Best-effort project from Claude projects/<cwd-encoded>/ folder name."""
+    if not name:
+        return None
+    for sep in ("-Projects-", "-projects-"):
+        if sep in name:
+            tail = name.split(sep, 1)[1]
+            # Encoded path keeps `-` for `/`; project is usually the first segment.
+            return tail.split("-")[0] or None
+    return None
+
+
 def iter_usage(root: Path, source_id: str = "claude.code") -> Iterator[dict[str, Any]]:
     """Yield usage from assistant messages that include message.usage."""
     root = Path(root)
@@ -127,6 +139,8 @@ def iter_usage(root: Path, source_id: str = "claude.code") -> Iterator[dict[str,
         if path.name.startswith("."):
             continue
         session_fallback = path.stem
+        cwd = None
+        project = _project_from_encoded_dir(path.parent.name)
         try:
             with path.open(encoding="utf-8", errors="replace") as handle:
                 for line in handle:
@@ -137,6 +151,9 @@ def iter_usage(root: Path, source_id: str = "claude.code") -> Iterator[dict[str,
                         row = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    if cwd is None and isinstance(row.get("cwd"), str):
+                        cwd = row["cwd"]
+                        project = project_name(cwd) or project
                     if row.get("type") != "assistant":
                         continue
                     message = row.get("message")
@@ -159,6 +176,8 @@ def iter_usage(root: Path, source_id: str = "claude.code") -> Iterator[dict[str,
                         "tool": "claude-code",
                         "surface": "cli",
                         "model": str(model),
+                        "project": project or "unknown",
+                        "cwd": cwd,
                         "date": _date_from_ts(row.get("timestamp")),
                         "input_tokens": inp,
                         "cached_tokens": cached,
