@@ -522,9 +522,40 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual((result["ahead"], result["behind"]), (1, 0))
         self.assertEqual((result["modified"], result["untracked"]), (1, 1))
         self.assertEqual(result["upstream"], "origin/main")
-        self.assertFalse(result["fresh"])
+        self.assertTrue(result["fresh"])
 
-    def test_inspect_repo_never_fetches_or_runs_mutating_git_commands(self):
+    def test_inspect_repo_fetch_updates_behind_from_remote(self):
+        api = self.api()
+        remote = self.root / "shared.git"
+        subprocess.run(
+            ["git", "init", "--bare", str(remote)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        one = self.repo("one")
+        self.git(one, "remote", "add", "origin", str(remote))
+        self.git(one, "push", "-u", "origin", "main")
+        self.git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+        two = self.root / "two"
+        subprocess.run(
+            ["git", "clone", "-b", "main", str(remote), str(two)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        (one / "file.txt").write_text("moved")
+        self.git(one, "commit", "-am", "moved")
+        self.git(one, "push")
+        stale = api.inspect_repo(str(two), False)
+        self.assertEqual((stale["ahead"], stale["behind"]), (0, 0))
+        self.assertFalse(stale["fresh"])
+        live = api.inspect_repo(str(two), True)
+        self.assertEqual((live["ahead"], live["behind"]), (0, 1))
+        self.assertTrue(live["fresh"])
+        self.assertIsNone(live["error"])
+
+    def test_inspect_repo_fetches_without_mutating_worktree(self):
         api = self.api()
         repo = self.repo("local-only")
         self.git(repo, "remote", "add", "origin", str(self.root / "missing.git"))
@@ -545,8 +576,35 @@ class CompanionTests(unittest.TestCase):
 
         self.assertEqual((result["ahead"], result["behind"]), (0, 0))
         self.assertFalse(result["fresh"])
-        forbidden = {"fetch", "pull", "checkout", "switch", "commit", "reset"}
+        self.assertTrue(any(args and args[0] == "fetch" for args in calls))
+        self.assertTrue(
+            any(args[:3] == ("fetch", "--all", "--prune") for args in calls)
+        )
+        forbidden = {"pull", "checkout", "switch", "commit", "reset"}
         self.assertFalse(any(forbidden.intersection(args) for args in calls))
+
+    def test_inspect_repo_skips_fetch_when_disabled(self):
+        api = self.api()
+        repo = self.repo("local-only")
+        self.git(repo, "remote", "add", "origin", str(self.root / "missing.git"))
+        self.git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.git(repo, "branch", "--set-upstream-to=origin/main")
+        calls = []
+        original = api.git
+
+        def tracking_git(path, *args, timeout=35):
+            calls.append(args)
+            return original(path, *args, timeout=timeout)
+
+        api.git = tracking_git
+        try:
+            result = api.inspect_repo(str(repo), False)
+        finally:
+            api.git = original
+
+        self.assertEqual((result["ahead"], result["behind"]), (0, 0))
+        self.assertFalse(result["fresh"])
+        self.assertFalse(any(args and args[0] == "fetch" for args in calls))
 
     def test_unreachable_remote_uses_existing_local_tracking_counts(self):
         api = self.api()

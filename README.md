@@ -29,7 +29,7 @@ python3 companion/server.py --root ~/Projects --root /another/folder --ui
 ## Use
 
 1. **Manage tracked repos** — discover eligible GitHub workspaces under an approved folder, explicitly select them, and group their canonical repositories into logical projects.
-2. **Scan** — refresh sync status and portfolio stats for tracked repos.
+2. **Scan** — fetch remotes for tracked repos, then refresh sync status and portfolio stats.
 3. **Stats** — combined activity chart and repo comparison board.
 4. **AI** (`#/ai`) — detect local AI store availability, then report conversations, transcript matches, and tokens only for selected GitHub repositories.
 5. Open a repo row for detail (volume, diff churn, commit timeline).
@@ -115,7 +115,7 @@ Project changes persist locally in `.repo-local/project-identities.json`. Writes
 
 ## What Scan does
 
-- Reads existing local and remote-tracking refs to report ahead / behind, modified, and untracked counts; it does not fetch.
+- Runs `git fetch --all --prune` in each tracked clone, then reads local and remote-tracking refs for ahead / behind, modified, and untracked counts.
 - Never pulls, pushes, commits, checks out, or stashes.
 - Recomputes local stats (history + current-tree LOC via `scc`; stats never fetch remotes).
 

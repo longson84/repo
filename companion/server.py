@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Loopback-only repository scanner and stats collector.
 
-No checkout, pull, commit, or push endpoints. Stats are read-only and never fetch.
+Scan may fetch remotes. No checkout, pull, commit, or push endpoints.
+Stats are read-only and never fetch.
 """
 
 import argparse
@@ -636,6 +637,12 @@ def inspect_repo(path, fetch=True):
         error=None,
         github=None,
     )
+    if fetch:
+        try:
+            git(path, "fetch", "--all", "--prune", timeout=120)
+            result["fresh"] = True
+        except (ValueError, subprocess.TimeoutExpired, OSError):
+            result["fresh"] = False
     try:
         result["branch"] = git(path, "symbolic-ref", "--short", "-q", "HEAD")
     except ValueError:
@@ -683,12 +690,12 @@ def inspect_repo(path, fetch=True):
         ahead, behind = git(
             path, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"
         ).split()
-        result.update(ahead=int(ahead), behind=int(behind), fresh=False)
+        result.update(ahead=int(ahead), behind=int(behind))
     except (ValueError, subprocess.TimeoutExpired, OSError):
         result["error"] = (
             "Local Git check failed. Fetch in your terminal if remote-tracking refs are missing."
         )
-        result.update(ahead=None, behind=None, fresh=False)
+        result.update(ahead=None, behind=None)
     return result
 
 

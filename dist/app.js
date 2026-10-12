@@ -666,7 +666,7 @@ function render() {
   $('currentMachineState').textContent = paired ? 'Companion connected' : 'Not connected';
   $('nextTitle').textContent = `${repos.filter(eligible).length} repositories can receive updates`;
   $('nextText').textContent =
-    'Review the eligible branches and the reasons other repositories need attention. This version previews updates; it does not pull or push.';
+    'Review the eligible branches and the reasons other repositories need attention. Scan fetches remotes; it does not pull or push.';
   const route = parseRoute();
   const onDetail = route.view === 'repo';
   const onStats = route.view === 'stats';
