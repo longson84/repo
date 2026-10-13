@@ -1095,6 +1095,7 @@
         font-size: 11px;
         color: #5d704c;
         padding: 7px 10px;
+        margin-left: 8px;
       }
       .boxfoot {
         padding: 14px 21px;
@@ -1623,6 +1624,7 @@
             </div>
             <div class="actions">
               <button class="btn" id="manage">Manage tracked repos</button>
+              <button class="btn" id="pullAll">Pull all</button>
               <button class="btn primary" id="scan">
                 <span class="arrow">⟳</span>
                 Scan
@@ -1777,7 +1779,7 @@
           </div>
           <footer class="footer">
             <span>Live data from your paired local companion.</span>
-            <span>Scanning fetches references. Pull and push are not enabled.</span>
+            <span>Scan fetches remotes. Pull all fast-forwards ready branches. Push is not enabled.</span>
           </footer>
         </div>
         <div id="detailView" class="detail-page" hidden></div>

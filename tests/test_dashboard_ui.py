@@ -54,6 +54,53 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
             self.fail(error.stderr)
         return json.loads(completed.stdout)
 
+    def test_pull_all_button_posts_pull_for_ready_repos(self):
+        markup = (ROOT / "dist" / "index.html").read_text()
+        self.assertIn('id="pullAll"', markup)
+        result = self.render(
+            "(() => { paired=true; paths=['/work/a']; busy=false; statsBusy=false;"
+            "repos=[{path:'/work/a',name:'a',fresh:true,error:null,upstream:'origin/main',"
+            "ahead:0,behind:1,modified:0,untracked:0}]; let url=null;"
+            "fetch=async(href)=>{ if(String(href).includes('/api/pull')) url=href;"
+            "return {ok:true,status:200,json:async()=>String(href).includes('/api/pull')?"
+            "{machine:'test',scannedAt:'2026-10-11T00:00:00Z',pulled:1,"
+            "repositories:[{path:'/work/a',name:'a',fresh:true,ahead:0,behind:0,"
+            "modified:0,untracked:0}]}:{repositories:[],projects:[]}};};"
+            "return runPull().then(()=>({url,behind:repos[0].behind})); })()"
+        )
+        self.assertTrue(result["url"].endswith("/api/pull"))
+        self.assertEqual(result["behind"], 0)
+
+    def test_ready_row_shows_pull_button_and_posts_that_path(self):
+        html = self.render(
+            "(() => { $('search').value=''; paired=true; scannedAt='2026-10-11T00:00:00Z';"
+            "paths=['/work/ready','/work/dirty']; busy=false; statsBusy=false;"
+            "repos=["
+            "{path:'/work/ready',name:'ready',branch:'main',fresh:true,error:null,"
+            "upstream:'origin/main',ahead:0,behind:2,modified:0,untracked:0},"
+            "{path:'/work/dirty',name:'dirty',branch:'main',fresh:true,error:null,"
+            "upstream:'origin/main',ahead:0,behind:2,modified:1,untracked:0}"
+            "]; render(); return $('rows').innerHTML; })()"
+        )
+        self.assertIn('data-path="/work/ready"', html)
+        self.assertIn("row-pull", html)
+        self.assertRegex(html, r'data-path="/work/ready"[^>]*>Pull')
+        self.assertNotRegex(html, r'data-path="/work/dirty"[^>]*>Pull')
+
+        result = self.render(
+            "(() => { paired=true; paths=['/work/ready']; busy=false; statsBusy=false;"
+            "repos=[{path:'/work/ready',name:'ready',fresh:true,error:null,"
+            "upstream:'origin/main',ahead:0,behind:2,modified:0,untracked:0}];"
+            "let body=null; fetch=async(href,options)=>{"
+            "if(String(href).includes('/api/pull')) body=JSON.parse(options.body);"
+            "return {ok:true,status:200,json:async()=>String(href).includes('/api/pull')?"
+            "{machine:'test',scannedAt:'2026-10-11T00:00:00Z',pulled:1,"
+            "repositories:[{path:'/work/ready',name:'ready',fresh:true,ahead:0,behind:0,"
+            "modified:0,untracked:0}]}:{repositories:[],projects:[]}};};"
+            "return runPull({path:'/work/ready'}).then(()=>body); })()"
+        )
+        self.assertEqual(result, {"path": "/work/ready"})
+
     def test_dashboard_has_no_cross_machine_placeholder_ui(self):
         markup = (ROOT / "dist" / "index.html").read_text()
         script = (ROOT / "dist" / "app.js").read_text()

@@ -30,10 +30,11 @@ python3 companion/server.py --root ~/Projects --root /another/folder --ui
 
 1. **Manage tracked repos** — discover eligible GitHub workspaces under an approved folder, explicitly select them, and group their canonical repositories into logical projects.
 2. **Scan** — fetch remotes for tracked repos, then refresh sync status and portfolio stats.
-3. **Stats** — combined activity chart and repo comparison board.
-4. **AI** (`#/ai`) — detect local AI store availability, then report conversations, transcript matches, and tokens only for selected GitHub repositories.
-5. Open a repo row for detail (volume, diff churn, commit timeline).
-6. **Languages** (`#/languages`) — sortable logical-project × languages matrix with expandable repository rows (code lines via [`scc`](https://github.com/boyter/scc)). Values in thousands (`1,230k`).
+3. **Pull all** — fast-forward tracked clones that are ready to pull (fetched, clean, behind, not ahead). Each ready row also has its own **Pull** button.
+4. **Stats** — combined activity chart and repo comparison board.
+5. **AI** (`#/ai`) — detect local AI store availability, then report conversations, transcript matches, and tokens only for selected GitHub repositories.
+6. Open a repo row for detail (volume, diff churn, commit timeline).
+7. **Languages** (`#/languages`) — sortable logical-project × languages matrix with expandable repository rows (code lines via [`scc`](https://github.com/boyter/scc)). Values in thousands (`1,230k`).
 
 Requires `scc` on `PATH` (`brew install scc`).
 
@@ -118,6 +119,12 @@ Project changes persist locally in `.repo-local/project-identities.json`. Writes
 - Runs `git fetch --all --prune` in each tracked clone, then reads local and remote-tracking refs for ahead / behind, modified, and untracked counts.
 - Never pulls, pushes, commits, checks out, or stashes.
 - Recomputes local stats (history + current-tree LOC via `scc`; stats never fetch remotes).
+
+## What Pull all does
+
+- Re-checks each targeted clone on disk, then runs `git pull --ff-only` only when it is clean, not ahead, and behind its upstream. **Pull all** targets every tracked clone; a row **Pull** targets that clone only.
+- Leaves dirty, diverged, ahead, and unfetched clones unchanged.
+- Never pushes, checks out, resets, or stashes.
 
 ## Data on this machine
 

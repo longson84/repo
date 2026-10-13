@@ -267,6 +267,7 @@ class AiApiTests(unittest.TestCase):
             ("GET", "/api/status", None),
             ("GET", "/api/project-identities", None),
             ("POST", "/api/scan", {}),
+            ("POST", "/api/pull", {}),
             ("GET", "/api/stats", None),
             ("GET", "/api/ai/detect", None),
             ("POST", "/api/ai/sessions", {}),

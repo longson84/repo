@@ -57,6 +57,30 @@ class CompanionTests(unittest.TestCase):
         )
         return path
 
+    def behind_clone(self, name="behind"):
+        remote = self.root / f"{name}-remote.git"
+        subprocess.run(
+            ["git", "init", "--bare", str(remote)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        source = self.repo(f"{name}-source")
+        self.git(source, "remote", "add", "origin", str(remote))
+        self.git(source, "push", "-u", "origin", "main")
+        self.git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+        clone = self.root / name
+        subprocess.run(
+            ["git", "clone", "-b", "main", str(remote), str(clone)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        (source / "file.txt").write_text("moved")
+        self.git(source, "commit", "-am", "moved")
+        self.git(source, "push")
+        return source, clone
+
     def test_state_reconciles_selection_identity_and_caches_on_startup(self):
         api = self.api()
         selected = self.repo("selected")
@@ -617,6 +641,96 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual((result["ahead"], result["behind"]), (0, 0))
         self.assertIsNone(result["error"])
 
+    def test_pull_ready_repo_fast_forwards_behind_clone(self):
+        api = self.api()
+        source, clone = self.behind_clone()
+        fetched = api.inspect_repo(str(clone), True)
+        self.assertEqual((fetched["ahead"], fetched["behind"]), (0, 1))
+        result = api.pull_ready_repo(str(clone), fetched)
+        self.assertEqual((result["ahead"], result["behind"]), (0, 0))
+        self.assertTrue(result["fresh"])
+        self.assertIsNone(result["error"])
+        self.assertEqual(
+            self.git(clone, "rev-parse", "HEAD"),
+            self.git(source, "rev-parse", "HEAD"),
+        )
+
+    def test_pull_ready_repo_skips_dirty_and_ahead_clones(self):
+        api = self.api()
+        _, dirty = self.behind_clone("dirty")
+        api.inspect_repo(str(dirty), True)
+        (dirty / "file.txt").write_text("local-edit")
+        dirty_head = self.git(dirty, "rev-parse", "HEAD")
+        dirty_result = api.pull_ready_repo(str(dirty))
+        self.assertEqual(self.git(dirty, "rev-parse", "HEAD"), dirty_head)
+        self.assertGreater(dirty_result["modified"] + dirty_result["untracked"], 0)
+
+        _, ahead = self.behind_clone("ahead")
+        api.inspect_repo(str(ahead), True)
+        (ahead / "file.txt").write_text("local-commit")
+        self.git(ahead, "commit", "-am", "local")
+        ahead_head = self.git(ahead, "rev-parse", "HEAD")
+        ahead_result = api.pull_ready_repo(str(ahead))
+        self.assertEqual(self.git(ahead, "rev-parse", "HEAD"), ahead_head)
+        self.assertGreater(ahead_result["ahead"], 0)
+
+    def test_pull_ready_repo_uses_ff_only_and_isolates_failure(self):
+        api = self.api()
+        _, clone = self.behind_clone("ff")
+        previous = api.inspect_repo(str(clone), True)
+        calls = []
+        original = api.git
+        pulled_head = self.git(clone, "rev-parse", "HEAD")
+
+        def tracking_git(path, *args, timeout=35):
+            calls.append(args)
+            if args and args[0] == "pull":
+                raise ValueError("Git operation failed: pull")
+            return original(path, *args, timeout=timeout)
+
+        api.git = tracking_git
+        try:
+            failed = api.pull_ready_repo(str(clone), previous)
+        finally:
+            api.git = original
+
+        self.assertEqual(failed["error"], "Fast-forward pull failed.")
+        self.assertEqual(self.git(clone, "rev-parse", "HEAD"), pulled_head)
+        self.assertTrue(any(args[:2] == ("pull", "--ff-only") for args in calls))
+        forbidden = {"checkout", "switch", "commit", "reset", "push"}
+        self.assertFalse(any(forbidden.intersection(args) for args in calls))
+
+        _, other = self.behind_clone("other")
+        other_fetch = api.inspect_repo(str(other), True)
+        other_result = api.pull_ready_repo(str(other), other_fetch)
+        self.assertEqual((other_result["ahead"], other_result["behind"]), (0, 0))
+        self.assertIsNone(other_result["error"])
+
+    def test_tracked_pull_paths_limits_to_one_selected_clone(self):
+        api = self.api()
+        one = self.github_repo("one")
+        other = self.github_repo("other")
+        state = api.State([self.root], self.root / "settings.json")
+        state.select([str(one)])
+        selected = str(one.resolve())
+        self.assertEqual(api.tracked_pull_paths(state), [selected])
+        self.assertEqual(api.tracked_pull_paths(state, str(one)), [selected])
+        with self.assertRaises(ValueError):
+            api.tracked_pull_paths(state, str(other))
+
+    def test_merge_scan_repos_keeps_untouched_rows(self):
+        api = self.api()
+        previous = {
+            "/work/a": {"path": "/work/a", "behind": 1, "name": "a"},
+            "/work/b": {"path": "/work/b", "behind": 1, "name": "b"},
+        }
+        updates = [{"path": "/work/a", "behind": 0, "name": "a", "pulled": True}]
+        repos, pulled = api.merge_scan_repos(
+            previous, updates, ["/work/a", "/work/b"], lambda item: item
+        )
+        self.assertEqual(pulled, 1)
+        self.assertEqual([(row["path"], row["behind"]) for row in repos], [("/work/a", 0), ("/work/b", 1)])
+
     def test_request_auth_rejects_other_origins_hosts_and_tokens(self):
         api = self.api()
         self.assertTrue(
@@ -1121,6 +1235,43 @@ class HttpBoundaryTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join()
+
+    def test_client_disconnect_during_response_is_not_a_bad_request(self):
+        handler = module.Handler.__new__(module.Handler)
+        handler.headers = {
+            "Host": "127.0.0.1:48731",
+            "Origin": "https://repo.theana.online",
+            "Authorization": "Bearer test-token",
+        }
+        handler.command = "GET"
+        handler.path = "/api/status"
+        handler.request_version = "HTTP/1.1"
+        handler.close_connection = False
+        handler.wfile = mock.Mock()
+        handler.wfile.write.side_effect = BrokenPipeError(32, "Broken pipe")
+        statuses = []
+        handler.send_response = lambda status, *args, **kwargs: statuses.append(status)
+        handler.send_header = lambda *args, **kwargs: None
+        handler.end_headers = lambda: None
+        handler.server = mock.Mock()
+        handler.server.server_port = 48731
+        handler.server.token = "test-token"
+        handler.server.state = mock.Mock()
+        handler.server.state.lock.acquire.return_value = True
+        handler.server.state.roots = []
+        handler.server.state.paths = []
+        handler.server.state.workspace_inventory.return_value = []
+        handler.server.state.last_reconciliation = {}
+        handler.server.state.last_scan_payload.return_value = {
+            "scannedAt": None,
+            "repositories": [],
+        }
+
+        handler.send_json(200, {"ok": True})
+        handler.handle_api()
+
+        self.assertEqual(statuses, [200, 200])
+        handler.server.state.lock.release.assert_called_once()
 
 
 if __name__ == "__main__":

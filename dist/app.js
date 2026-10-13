@@ -17,6 +17,7 @@ let repos = [],
   lastFocus,
   activity = [],
   busy = false,
+  pulling = false,
   statsBusy = false,
   statsByPath = {},
   statsProjects = [],
@@ -131,7 +132,11 @@ async function pairWithToken(candidate) {
 async function api(path, body) {
   const controller = new AbortController();
   const long =
-    path === 'scan' || path === 'ai/detect' || path === 'ai/sessions' || (path === 'stats' && body);
+    path === 'scan' ||
+    path === 'pull' ||
+    path === 'ai/detect' ||
+    path === 'ai/sessions' ||
+    (path === 'stats' && body);
   const timer = setTimeout(() => controller.abort(), long ? 900000 : 20000);
   try {
     const response = await fetch(base + '/api/' + path, {
@@ -608,6 +613,9 @@ function render() {
             <span class="badge ${eligible(r) || next(r) === 'Up to date' ? 'pull' : 'review'}">
               ${esc(next(r))}
             </span>
+            ${eligible(r)
+              ? `<button type="button" class="row-btn row-pull" data-path="${esc(r.path)}" ${busy || statsBusy ? 'disabled' : ''}>Pull</button>`
+              : ''}
           </td>
         </tr>
       `;
@@ -658,15 +666,19 @@ function render() {
     : 'No live scan yet';
   $('currentInsights').hidden = !scannedAt;
   $('scan').disabled = !paired || busy || statsBusy || !paths.length;
+  $('pullAll').disabled =
+    !paired || busy || statsBusy || !repos.filter(eligible).length;
   $('manage').disabled = !paired || busy || statsBusy;
   $('connect').textContent = paired ? 'Connection settings' : 'Connect companion';
   if ($('disconnect')) $('disconnect').hidden = !paired;
-  $('scan').innerHTML = busy || statsBusy ? 'Scanning…' : '<span class="arrow">⟳</span> Scan';
+  $('scan').innerHTML =
+    (busy || statsBusy) && !pulling ? 'Scanning…' : '<span class="arrow">⟳</span> Scan';
+  $('pullAll').textContent = pulling ? 'Pulling…' : 'Pull all';
   $('currentMachineNav').textContent = machineName;
   $('currentMachineState').textContent = paired ? 'Companion connected' : 'Not connected';
   $('nextTitle').textContent = `${repos.filter(eligible).length} repositories can receive updates`;
   $('nextText').textContent =
-    'Review the eligible branches and the reasons other repositories need attention. Scan fetches remotes; it does not pull or push.';
+    'Review the eligible branches and the reasons other repositories need attention. Scan fetches remotes. Pull all fast-forwards ready branches; it does not push.';
   const route = parseRoute();
   const onDetail = route.view === 'repo';
   const onStats = route.view === 'stats';
@@ -719,6 +731,13 @@ function render() {
         event.preventDefault();
         openRepo(row.dataset.path);
       }
+    };
+  });
+  document.querySelectorAll('button.row-pull').forEach((button) => {
+    button.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      runPull({ path: button.dataset.path });
     };
   });
 }
@@ -3756,7 +3775,47 @@ async function runScan(options = {}) {
     render();
   }
 }
+async function runPull(options = {}) {
+  const path = options.path;
+  const ready = path
+    ? repos.filter((repo) => repo.path === path && eligible(repo))
+    : repos.filter(eligible);
+  if (!paired || busy || statsBusy || !ready.length) return;
+  busy = true;
+  pulling = true;
+  statsBusy = true;
+  render();
+  try {
+    const result = await api('pull', path ? { path } : {});
+    repos = result.repositories;
+    workspaces = Array.isArray(result.repositories) ? result.repositories : workspaces;
+    machineName = result.machine;
+    scannedAt = result.scannedAt;
+    const pulled = result.pulled || 0;
+    activity.unshift(
+      path
+        ? `Pulled ${ready[0].name} at ${new Date(scannedAt).toLocaleString()}`
+        : `Pulled ${pulled} repositories at ${new Date(scannedAt).toLocaleString()}`,
+    );
+    const stats = await api('stats', { all: true, refresh: true });
+    mergeStats(stats.repositories, stats.projects);
+    gitStatsInvalidatedByIdentity = false;
+    const errors = repos.filter((r) => r.error).length;
+    toast(
+      (path ? `Pulled ${ready[0].name}` : `Pull all complete · ${pulled} fast-forwarded`) +
+        (errors ? ` · ${errors} need Git access checks` : ''),
+    );
+  } catch (e) {
+    toast((path ? 'Pull failed: ' : 'Pull all failed: ') + e.message);
+  } finally {
+    busy = false;
+    pulling = false;
+    statsBusy = false;
+    render();
+  }
+}
 $('scan').onclick = runScan;
+$('pullAll').onclick = runPull;
 $('connect').onclick = connect;
 $('disconnect').onclick = () => {
   clearPairing();

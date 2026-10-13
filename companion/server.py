@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Loopback-only repository scanner and stats collector.
 
-Scan may fetch remotes. No checkout, pull, commit, or push endpoints.
-Stats are read-only and never fetch.
+Scan may fetch remotes. Pull may fast-forward ready branches.
+No checkout, commit, reset, or push endpoints. Stats are read-only and never fetch.
 """
 
 import argparse
@@ -697,6 +697,68 @@ def inspect_repo(path, fetch=True):
         )
         result.update(ahead=None, behind=None)
     return result
+
+
+def ready_to_pull(result):
+    return (
+        not result.get("error")
+        and result.get("upstream")
+        and result.get("branch") not in (None, "Detached HEAD")
+        and result.get("ahead") == 0
+        and isinstance(result.get("behind"), int)
+        and result["behind"] > 0
+        and result.get("modified", 0) + result.get("untracked", 0) == 0
+    )
+
+
+def pull_ready_repo(path, previous=None):
+    current = inspect_repo(path, fetch=False)
+    if previous and not current.get("error"):
+        current["fresh"] = bool(previous.get("fresh"))
+    if not ready_to_pull(current):
+        current["pulled"] = False
+        return current
+    try:
+        git(path, "pull", "--ff-only", timeout=120)
+    except (ValueError, subprocess.TimeoutExpired, OSError):
+        current["error"] = "Fast-forward pull failed."
+        current["fresh"] = False
+        current["pulled"] = False
+        return current
+    updated = inspect_repo(path, fetch=False)
+    updated["fresh"] = True
+    updated["pulled"] = True
+    return updated
+
+
+def tracked_pull_paths(state, requested_path=None):
+    tracked = [str(state.checked(path)) for path in state.paths]
+    if requested_path in (None, ""):
+        return tracked
+    target = str(state.checked(requested_path))
+    if target not in tracked:
+        raise ValueError("Repository is not tracked.")
+    return [target]
+
+
+def merge_scan_repos(previous, updates, tracked_paths, decorate):
+    by_path = {}
+    for item in (previous or {}).values():
+        path = str(item.get("path") or "")
+        if path:
+            by_path[path] = dict(item)
+    pulled = 0
+    for item in updates:
+        row = dict(item)
+        if row.pop("pulled", False):
+            pulled += 1
+        path = str(row.get("path") or "")
+        if path:
+            by_path[path] = row
+    return (
+        [decorate(by_path[path]) for path in tracked_paths if path in by_path],
+        pulled,
+    )
 
 
 def collect_stats(path):
@@ -1752,15 +1814,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_json(self, status, data):
         payload = json.dumps(data).encode()
-        self.send_response(status)
-        if self.headers_allowed():
-            self.send_header("Access-Control-Allow-Origin", self.headers["Origin"])
-            self.send_header("Vary", "Origin")
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        try:
+            self.send_response(status)
+            if self.headers_allowed():
+                self.send_header("Access-Control-Allow-Origin", self.headers["Origin"])
+                self.send_header("Vary", "Origin")
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except ConnectionError:
+            return
 
     def do_OPTIONS(self):
         if not self.headers_allowed():
@@ -1850,6 +1915,27 @@ class Handler(BaseHTTPRequestHandler):
                     "scannedAt": scanned_at,
                     "repositories": repos,
                 }
+            elif self.command == "POST" and self.path == "/api/pull":
+                paths = tracked_pull_paths(state, data.get("path"))
+                previous = state.scan_cache.get("repos") or {}
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    raw = list(
+                        pool.map(
+                            lambda path: pull_ready_repo(path, previous.get(path)),
+                            paths,
+                        )
+                    )
+                repos, pulled = merge_scan_repos(
+                    previous, raw, state.paths, state.decorate_workspace
+                )
+                scanned_at = datetime.now(timezone.utc).isoformat()
+                state.remember_scan(repos, scanned_at)
+                response = {
+                    "machine": socket.gethostname(),
+                    "scannedAt": scanned_at,
+                    "pulled": pulled,
+                    "repositories": repos,
+                }
             elif self.command == "GET" and self.path == "/api/stats":
                 response = {
                     "machine": socket.gethostname(),
@@ -1902,6 +1988,8 @@ class Handler(BaseHTTPRequestHandler):
                 409,
                 {"error": str(error), "code": "identity_config_conflict"},
             )
+        except ConnectionError:
+            return
         except (ValueError, KeyError, OSError, TypeError) as error:
             self.send_json(
                 400,
