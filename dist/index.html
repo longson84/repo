@@ -1193,7 +1193,9 @@
         position: sticky;
         top: 0;
         max-height: calc(100vh - 190px);
-        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        overflow: visible;
         border: 1px solid var(--line);
         border-radius: 10px;
         padding: 16px;
@@ -1435,6 +1437,9 @@
         flex-shrink: 0;
       }
       .project-manager-actions {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
         margin: 0 0 24px;
       }
       .project-manager-row {
@@ -1492,6 +1497,9 @@
         display: grid;
         gap: 9px;
         background: #f8faf4;
+        overflow: visible;
+        position: relative;
+        z-index: 2;
       }
       .project-editor input,
       .project-editor select {
@@ -1501,10 +1509,15 @@
         border-radius: 7px;
         padding: 10px;
         background: white;
+        appearance: auto;
+        position: relative;
+        z-index: 3;
       }
       .configured-project-list {
         display: grid;
         gap: 10px;
+        min-height: 0;
+        overflow: auto;
       }
       .configured-project-card {
         margin: 0;

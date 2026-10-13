@@ -3036,10 +3036,21 @@ function projectManagerRows(
     .join('');
 }
 
-function projectBulkEditor(config, selectedRepositoryIds, mode = 'existing') {
+function resolveBulkAssignmentMode(mode, _projects) {
+  if (mode === 'new' || mode === 'standalone') return mode;
+  return 'existing';
+}
+
+function projectBulkEditor(
+  config,
+  selectedRepositoryIds,
+  mode = 'existing',
+  selectedProjectId = '',
+) {
   const count = new Set(selectedRepositoryIds || []).size;
   const projects = config?.projects || [];
-  const activeMode = mode === 'new' || mode === 'standalone' ? mode : 'existing';
+  const activeMode = resolveBulkAssignmentMode(mode, projects);
+  const selectedId = String(selectedProjectId || '');
   return /* HTML */ `
     <div class="project-editor" data-project-editor="bulk">
       <strong>${count} ${count === 1 ? 'repository' : 'repositories'} selected</strong>
@@ -3057,9 +3068,16 @@ function projectBulkEditor(config, selectedRepositoryIds, mode = 'existing') {
         Project
       </label>
       <select id="projectTarget" ${activeMode === 'existing' ? '' : 'hidden'}>
-        ${projects
-          .map((project) => `<option value="${esc(project.id)}">${esc(project.name)}</option>`)
-          .join('')}
+        ${projects.length
+          ? projects
+              .map(
+                (project) =>
+                  `<option value="${esc(project.id)}" ${
+                    project.id === selectedId ? 'selected' : ''
+                  }>${esc(project.name)}</option>`,
+              )
+              .join('')
+          : '<option value="" disabled selected>No configured projects yet</option>'}
       </select>
       <label class="small" for="projectName" ${activeMode === 'new' ? '' : 'hidden'}>
         New project name
@@ -3382,6 +3400,7 @@ async function manage() {
   const selectedRepositoryIds = new Set();
   let bulkEditorMode = null;
   let bulkAssignmentMode = 'existing';
+  let bulkTargetProjectId = '';
   let lifecycleEditor = null;
   let projectPaneOpen = false;
   let closeConfirmationOpen = false;
@@ -3482,13 +3501,10 @@ async function manage() {
       .filter((row) => row.tracked)
       .map((row) => row.repository_id);
     const groupingLocked = !projectIdentityConfigEditable(identityDraft);
-    if (
-      bulkEditorMode === 'bulk' &&
-      bulkAssignmentMode === 'existing' &&
-      !(identityDraft.projects || []).length
-    ) {
-      bulkAssignmentMode = 'new';
-    }
+    bulkAssignmentMode = resolveBulkAssignmentMode(
+      bulkAssignmentMode,
+      identityDraft.projects || [],
+    );
     $('projectManagerActions').innerHTML = /* HTML */ `
       <div class="project-bulk-toolbar">
         <strong>${selectedRepositoryIds.size} selected</strong>
@@ -3504,7 +3520,12 @@ async function manage() {
         </div>
       </div>
       ${bulkEditorMode === 'bulk'
-        ? projectBulkEditor(identityDraft, selectedRepositoryIds, bulkAssignmentMode)
+        ? projectBulkEditor(
+            identityDraft,
+            selectedRepositoryIds,
+            bulkAssignmentMode,
+            bulkTargetProjectId,
+          )
         : ''}
       <h4>Configured projects</h4>
       <div class="configured-project-list">
@@ -3547,10 +3568,19 @@ async function manage() {
     };
     if (bulkEditorMode === 'bulk') {
       $('projectMode').onchange = () => {
-        bulkAssignmentMode = $('projectMode').value;
+        bulkAssignmentMode = resolveBulkAssignmentMode(
+          $('projectMode').value,
+          identityDraft.projects || [],
+        );
         draw();
-        focusFirstProjectEditorControl('[data-project-editor="bulk"]');
+        if (bulkAssignmentMode === 'existing') $('projectTarget')?.focus();
+        else focusFirstProjectEditorControl('[data-project-editor="bulk"]');
       };
+      if ($('projectTarget')) {
+        $('projectTarget').onchange = () => {
+          bulkTargetProjectId = $('projectTarget').value;
+        };
+      }
       $('projectCancel').onclick = () => {
         bulkEditorMode = null;
         draw();
@@ -3566,6 +3596,10 @@ async function manage() {
             { type: 'standalone', repositoryIds: [...selectedRepositoryIds] },
             '#showProjects',
           );
+          return;
+        }
+        if (bulkAssignmentMode === 'existing' && !$('projectTarget').value) {
+          showProjectManagerError(new Error('Select an existing project.'));
           return;
         }
         const target =

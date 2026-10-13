@@ -432,6 +432,41 @@ Promise.resolve(output).then((value) => process.stdout.write(JSON.stringify(valu
         self.assertIn("General", html)
         self.assertIn('id="projectApply"', html)
         self.assertIn('id="projectCancel"', html)
+        self.assertNotRegex(html, r'id="projectTarget"[^>]*hidden')
+        self.assertRegex(html, r'<option value="general"[^>]*>General</option>')
+        self.assertRegex(html, r'<option value="product"[^>]*>Product</option>')
+
+    def test_existing_assignment_mode_stays_selected_even_without_projects(self):
+        result = self.render(
+            "({empty:resolveBulkAssignmentMode('existing', []),"
+            "withProjects:resolveBulkAssignmentMode('existing', [{id:'general'}]),"
+            "keepNew:resolveBulkAssignmentMode('new', [{id:'general'}]),"
+            "keepStandalone:resolveBulkAssignmentMode('standalone', [])})"
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "empty": "existing",
+                "withProjects": "existing",
+                "keepNew": "new",
+                "keepStandalone": "standalone",
+            },
+        )
+
+    def test_project_manager_styles_do_not_clip_project_selects(self):
+        css = (ROOT / "dist" / "index.html").read_text()
+        pane = re.search(
+            r"\.project-manager-pane \{(?P<body>.*?)\n      \}",
+            css,
+            re.S,
+        )
+        self.assertIsNotNone(pane)
+        self.assertNotIn("overflow: auto", pane.group("body"))
+        self.assertRegex(
+            css,
+            r"\.configured-project-list \{[^}]*overflow:\s*auto",
+        )
 
     def test_project_cards_protect_advanced_mappings(self):
         html = self.render(
